@@ -17,12 +17,6 @@ from typing import Any, Callable, Dict, NamedTuple, Optional
 import jax
 import jax.numpy as jnp
 
-from qqn_jax.lbfgs import (
-    LBFGSState,
-    init_lbfgs_state,
-    lbfgs_direction,
-    update_lbfgs_history,
-)
 from qqn_jax.line_search import (
     armijo_search,
     backtracking_search,
@@ -30,6 +24,7 @@ from qqn_jax.line_search import (
     hager_zhang_search,
     strong_wolfe_search,
 )
+from qqn_jax.oracles import OracleInfo, resolve_oracle
 from qqn_jax.regions import RegionInfo, resolve_region
 from qqn_jax.utils import (
     make_value_and_grad,
@@ -56,7 +51,7 @@ class QQNState(NamedTuple):
         iter: iteration counter.
         value: current objective value.
         grad: current gradient.
-        lbfgs_state: state of the L-BFGS oracle.
+         oracle_state: state of the oracle (e.g. L-BFGS history).
         step_size: last accepted step size ``α``.
         error: gradient norm (convergence metric).
         done: whether convergence has been reached.
@@ -67,7 +62,7 @@ class QQNState(NamedTuple):
     iter: jnp.ndarray
     value: jnp.ndarray
     grad: jnp.ndarray
-    lbfgs_state: LBFGSState
+    oracle_state: Any
     step_size: jnp.ndarray
     error: jnp.ndarray
     done: jnp.ndarray
@@ -107,6 +102,7 @@ class QQN:
         has_aux: bool = False,
         t_grid: Optional[jnp.ndarray] = None,
         region=None,
+        oracle="lbfgs",
     ):
         self.fun = fun
         self.maxiter = maxiter
@@ -117,6 +113,7 @@ class QQN:
         self.has_aux = has_aux
         self._value_and_grad = make_value_and_grad(fun, has_aux=has_aux)
         self.region = resolve_region(region)
+        self.oracle = resolve_oracle(oracle, history_size=history_size)
 
         if t_grid is None:
             # A small set of blends from gradient (small t) to L-BFGS (t=1).
@@ -159,14 +156,14 @@ class QQN:
     def init_state(self, params, *args) -> QQNState:
         """Initialize solver state at ``params``."""
         value, grad, aux = self._eval(params, *args)
-        lbfgs_state = init_lbfgs_state(params, grad, self.history_size)
+        oracle_state = self.oracle.init(params)
         error = tree_l2_norm(grad)
         region_state = self.region.init(params)
         return QQNState(
             iter=jnp.asarray(0, jnp.int32),
             value=value,
             grad=grad,
-            lbfgs_state=lbfgs_state,
+            oracle_state=oracle_state,
             step_size=jnp.asarray(1.0),
             error=error,
             done=error <= self.tol,
@@ -182,7 +179,7 @@ class QQN:
         grad = state.grad
 
         # 1. Oracle: L-BFGS direction (-H∇f).
-        qn_dir = lbfgs_direction(state.lbfgs_state, grad)
+        qn_dir, _ = self.oracle.direction(params, grad, state.oracle_state)
 
         # 2. Gradient: steepest descent direction (-∇f).
         grad_dir = tree_negative(grad)
@@ -219,10 +216,16 @@ class QQN:
         else:
             aux = None
 
-        # Update the L-BFGS oracle with the new (s, y) curvature pair.
-        new_lbfgs_state = update_lbfgs_history(
-            state.lbfgs_state, new_params, new_grad, self.history_size
+        # Update the oracle state (e.g. L-BFGS curvature pair, momentum).
+        oracle_info = OracleInfo(
+            params=params,
+            new_params=new_params,
+            grad=grad,
+            new_grad=new_grad,
+            t=best_t,
+            step_size=step_size,
         )
+        new_oracle_state = self.oracle.update(state.oracle_state, oracle_info)
         # Update region state (e.g. adaptive trust-region radius).
         actual_reduction = state.value - new_value
         info = RegionInfo(
@@ -240,7 +243,7 @@ class QQN:
             iter=state.iter + 1,
             value=new_value,
             grad=new_grad,
-            lbfgs_state=new_lbfgs_state,
+            oracle_state=new_oracle_state,
             step_size=step_size,
             error=error,
             done=error <= self.tol,

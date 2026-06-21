@@ -11,6 +11,14 @@ gradient and quasi-Newton directions.
 
 from qqn_jax.solver import QQN, QQNState
 from qqn_jax.line_search import strong_wolfe_search, backtracking_search
+from qqn_jax.oracles import (
+    Oracle,
+    OracleInfo,
+    LBFGSOracle,
+    MomentumOracle,
+    ShampooOracle,
+    Fallback,
+)
 from qqn_jax.regions import (
     Region,
     RegionInfo,
@@ -28,6 +36,12 @@ __all__ = [
     "QQNState",
     "strong_wolfe_search",
     "backtracking_search",
+    "Oracle",
+    "OracleInfo",
+    "LBFGSOracle",
+    "MomentumOracle",
+    "ShampooOracle",
+    "Fallback",
     "Region",
     "RegionInfo",
     "IdentityRegion",
