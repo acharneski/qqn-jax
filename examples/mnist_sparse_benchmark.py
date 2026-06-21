@@ -69,6 +69,7 @@ def load_mnist(
     if x_train is None:
         try:
             from tensorflow.keras.datasets import mnist  # type: ignore
+
             (xtr, ytr), (xte, yte) = mnist.load_data()
             x_train = xtr.reshape(xtr.shape[0], -1).astype(np.float32) / 255.0
             y_train = ytr.astype(np.int32)

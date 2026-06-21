@@ -35,6 +35,7 @@ from qqn_jax.regions import (
     BoxRegion,
     TrustRegion,
     OrthantRegion,
+    Sequential,
 )
 
 
@@ -287,6 +288,20 @@ def main():
             maxiter,
             line_search="strong_wolfe",
         ),
+        # --- QQN with backtracking line search (cheap, robust) ---
+        "QQN-BT": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="backtracking",
+        ),
+        # --- QQN with Hager-Zhang line search (efficient Wolfe variant) ---
+        "QQN-HZ": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="hager_zhang",
+        ),
         # --- QQN with a cubic Hermite spline line search ---
         "QQN-Spln": lambda: _run_qqn_configured(
             loss_fn,
@@ -301,12 +316,19 @@ def main():
             maxiter,
             oracle=MomentumOracle(beta=0.9),
         ),
+        # --- QQN with a deeper L-BFGS history (richer curvature memory) ---
+        "QQN-L20": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=20),
+        ),
         # --- QQN with a Shampoo (structure-aware) oracle ---
         "QQN-Shmp": lambda: _run_qqn_configured(
             loss_fn,
             params0,
             maxiter,
-            oracle=ShampooOracle(update_freq=10),
+            oracle=ShampooOracle(update_freq=1),
         ),
         # --- QQN with a Fallback oracle: L-BFGS, else momentum ---
         "QQN-Fall": lambda: _run_qqn_configured(
@@ -335,6 +357,30 @@ def main():
             params0,
             maxiter,
             region=OrthantRegion(),
+        ),
+        # --- Combined: strong-Wolfe search + adaptive trust-region ---
+        "QQN-SW+TR": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="strong_wolfe",
+            region=TrustRegion(radius=1.0, adaptive=True),
+        ),
+        # --- Combined: deep L-BFGS oracle + box constraint ---
+        "QQN-L20Box": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=20),
+            region=BoxRegion(lo=-2.0, hi=2.0),
+        ),
+        # --- Combined: Fallback oracle + Sequential (box ∩ trust) region ---
+        "QQN-Stack": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=Fallback([LBFGSOracle(history_size=10), MomentumOracle(beta=0.9)]),
+            region=Sequential([BoxRegion(lo=-2.0, hi=2.0), TrustRegion(radius=2.0)]),
         ),
         "SGD": lambda: run_optax(
             loss_fn, params0, optax.sgd(learning_rate=0.5), maxiter
