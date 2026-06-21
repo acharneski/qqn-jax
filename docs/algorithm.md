@@ -171,8 +171,13 @@ The solver registers several interchangeable strategies (all sharing a common
 The **spline** refinement is *not* a line-search strategy but an orthogonal,
 boolean enhancement (`spline=True`). Because the path `d(t_i)` is consistent
 across all measured points, every probe — regardless of the underlying line
-search — can be reused as a control point. When enabled, the spline refinement
-composes with any chosen line search.
+search — can be reused as a control point. The spline is best understood as an
+*expanded definition of the curve* rather than a competing search: it does not
+replace the chosen line search but **wraps** it (`spline_wrap(inner_search)`),
+first running the inner search and then probing the cubic Hermite spline's
+stationary points to improve on the accepted step. When enabled, the spline
+refinement therefore composes with — and genuinely augments — any chosen line
+search.
 
 ##### Backtracking / Armijo
 
@@ -189,10 +194,13 @@ recomputes value/grad at the (projected) accepted point.
 
 ##### Spline Search (Information-Reusing)
 
-The spline search treats every probe as a **reusable control point** carrying both
-a fitness value `f(d(α))` and a directional derivative `m = ⟨∇f, d⟩`. It fits a
-piecewise **cubic Hermite spline** to the active bracket and proposes the next
-probe at the spline's stationary points (closed-form roots of a quadratic). A
+The spline refinement **wraps** any inner line search (`spline_wrap(inner)`),
+treating every probe as a **reusable control point** carrying both a fitness
+value `f(d(α))` and a directional derivative `m = ⟨∇f, d⟩`. After the inner
+search accepts a step, it fits a piecewise **cubic Hermite spline** to the
+active bracket and proposes additional probes at the spline's stationary points
+(closed-form roots of a quadratic), keeping any that improve on the inner
+result. A
 crucial refinement is the **upstream/downstream symmetry rule**: tangents that
 oppose a segment's secant slope are reflected to prevent spurious inflections,
 phantom minima, and ill-conditioned segments. See

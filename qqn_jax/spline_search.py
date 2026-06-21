@@ -1,10 +1,18 @@
-"""Spline (cubic Hermite) line search for QQN.
+"""Spline (cubic Hermite) augmentation for QQN line searches.
 
 Each evaluation along the quadratic path ``d(t)`` yields both a fitness
 value ``f(d(t))`` and a directional derivative ``m = ⟨∇f, d'(t)⟩``. The
-standard backtracking search discards the gradient information; this search
-instead treats every measurement as a reusable *control point* and builds a
-piecewise cubic Hermite spline model of the objective along the path.
+spline does *not* replace the line search; it is an **expanded definition
+of the curve** that reuses every measured point as a reusable *control
+point* of a piecewise cubic Hermite spline model of the objective along
+the (consistent) path.
+
+``spline_wrap(inner_search)`` returns a line-search-compatible callable
+that first runs ``inner_search`` (any registered strategy), then attempts
+to *improve* on its accepted point by probing the stationary points of the
+cubic Hermite spline fit through the control points gathered so far. Because
+the path direction is consistent across all measured points, every probe —
+regardless of the underlying line search — is a valid control point.
 
 Candidate steps are proposed by locating stationary points of the cubic
 segments (closed-form roots of the quadratic derivative). Tangents are
@@ -19,7 +27,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 
-from qqn_jax.utils import tree_add_scaled, tree_vdot, quadratic_path_derivative
+from qqn_jax.utils import tree_add_scaled, tree_vdot
 from qqn_jax.regions import resolve_region
 from qqn_jax.line_search import LineSearchResult
 
@@ -114,165 +122,171 @@ def _segment_stationary_candidates(t0, t1, f0, m0, f1, m1):
     return t_cands, val_cands, valid
 
 
-def spline_search(
-    value_and_grad_fn: Callable,
-    params,
-    direction,
-    value,
-    grad,
-    *args,
-    init_step: float = 1.0,
-    c1: float = 1e-4,
-    max_iter: int = 10,
-    region=None,
-    region_state=None,
-) -> LineSearchResult:
-    """Cubic Hermite spline line search over the path direction ``direction``.
+def spline_wrap(inner_search: Callable) -> Callable:
+    """Augment ``inner_search`` with a cubic Hermite spline refinement.
 
-    The search accumulates ``(α, f, m)`` control points where ``α`` is the
-    step size, ``f`` the measured fitness, and ``m`` the measured directional
-    derivative ``⟨∇f(x + α·d), d⟩`` along the *fixed* direction ``d``. A cubic
-    Hermite spline is fit to the active bracket and its stationary points
-    guide the next probe.
+    Returns a line-search-compatible callable with the same signature as the
+    wrapped ``inner_search``. The spline is an *expanded definition of the
+    curve*, not a competing line search: it reuses the consistent path's
+    measured points as control points and probes the stationary points of
+    the resulting cubic Hermite spline to try to improve on the inner
+    search's accepted step.
 
-    This implementation parameterizes by the step size ``α`` along the
-    provided ``direction`` (the spec's path parameter ``t`` maps to the QQN
-    ``t``-grid handled by the solver; here ``d`` is already constructed).
+    The wrapped search:
 
-    Args:
-        grad_dir, qn_dir, t: optional QQN path metadata (unused directly but
-            accepted for interface compatibility with the solver).
+    1. Runs ``inner_search`` to obtain a baseline accepted point.
+    2. Forms control points from ``α = 0`` (current point, slope ``gᵀd``)
+       and ``α = α_inner`` (the inner search's accepted point, with its
+       measured slope).
+    3. Probes the spline's stationary points, projecting through the region
+       and keeping the lowest-value feasible point found.
+    4. Returns the better of the inner result and the spline probes.
+
+    Because every probe lies on the *same* fixed direction ``d`` (the path
+    stays consistent w.r.t. all measured points), this composes correctly
+    with any underlying line search.
     """
-    region = resolve_region(region)
 
-    def project(candidate):
-        return region.project(params, candidate, region_state)
+    def wrapped(
+        value_and_grad_fn: Callable,
+        params,
+        direction,
+        value,
+        grad,
+        *args,
+        spline_max_iter: int = 6,
+        region=None,
+        region_state=None,
+        **inner_kwargs,
+    ) -> LineSearchResult:
+        region = resolve_region(region)
 
-    dd = tree_vdot(direction, direction)
+        def project(candidate):
+            return region.project(params, candidate, region_state)
 
-    def eval_at(alpha):
-        raw = tree_add_scaled(params, alpha, direction)
-        projected = project(raw)
-        val, g = value_and_grad_fn(projected, *args)
-        # Directional derivative along the fixed direction d.
-        slope = tree_vdot(g, direction)
-        return projected, val, g, slope
+        def eval_at(alpha):
+            raw = tree_add_scaled(params, alpha, direction)
+            projected = project(raw)
+            val, g = value_and_grad_fn(projected, *args)
+            slope = tree_vdot(g, direction)
+            return projected, val, g, slope
 
-    dtype = value.dtype
+        dtype = value.dtype
 
-    # Control point 0: the current point (alpha = 0).
-    a0 = jnp.asarray(0.0, dtype=dtype)
-    f0 = value
-    # Slope at alpha=0 is gᵀd (already available).
-    m0 = tree_vdot(grad, direction)
-
-    # Control point 1: the initial probe (alpha = init_step).
-    a1 = jnp.asarray(init_step, dtype=dtype)
-    p1, f1, g1, m1 = eval_at(a1)
-
-    # Carry holds the active bracket: two control points (a0,f0,m0),(a1,f1,m1)
-    # plus the best-so-far accepted point.
-    def armijo_ok(alpha, fval):
-        return fval <= value + c1 * alpha * m0
-
-    # Initialize best with whichever of the two endpoints is feasible+lowest.
-    best_alpha = a1
-    best_params = p1
-    best_val = f1
-    best_grad = g1
-
-    InitCarry = (
-        a0,
-        f0,
-        m0,  # left control point
-        a1,
-        f1,
-        m1,  # right control point
-        best_alpha,
-        best_val,  # best so far
-        best_params,
-        best_grad,
-        jnp.asarray(0, jnp.int32),
-    )
-
-    def cond(carry):
-        (la, lf, lm, ra, rf, rm, ba, bv, bp, bg, i) = carry
-        # Stop once Armijo is satisfied at the best point or iters exhausted.
-        satisfied = armijo_ok(ba, bv)
-        return jnp.logical_and(jnp.logical_not(satisfied), i < max_iter)
-
-    def body(carry):
-        (la, lf, lm, ra, rf, rm, ba, bv, bp, bg, i) = carry
-
-        # Propose stationary points of the cubic over the bracket [la, ra].
-        t_cands, v_cands, valid = _segment_stationary_candidates(la, ra, lf, lm, rf, rm)
-
-        # Fallback proposal: midpoint of the bracket (always valid).
-        mid = 0.5 * (la + ra)
-        mid_val = jnp.asarray(jnp.inf, dtype=dtype)  # unknown until evaluated
-
-        # Choose the candidate with the lowest predicted value; if neither
-        # stationary point is valid, use the midpoint.
-        any_valid = jnp.any(valid)
-        best_c_idx = jnp.argmin(v_cands)
-        cand_alpha = jnp.where(any_valid, t_cands[best_c_idx], mid)
-
-        # Keep the proposal strictly inside the bracket to ensure progress.
-        lo = jnp.minimum(la, ra)
-        hi = jnp.maximum(la, ra)
-        span = hi - lo
-        margin = 1e-3 * jnp.maximum(span, 1e-12)
-        cand_alpha = jnp.clip(cand_alpha, lo + margin, hi - margin)
-
-        # Evaluate the proposed step.
-        cp, cf, cg, cm = eval_at(cand_alpha)
-
-        # Update best-so-far if this point improves on it.
-        improves = cf < bv
-        n_ba = jnp.where(improves, cand_alpha, ba)
-        n_bv = jnp.where(improves, cf, bv)
-        n_bp = jax.tree_util.tree_map(
-            lambda new, old: jnp.where(improves, new, old), cp, bp
-        )
-        n_bg = jax.tree_util.tree_map(
-            lambda new, old: jnp.where(improves, new, old), cg, bg
+        # 1. Run the wrapped inner line search to get a baseline.
+        inner = inner_search(
+            value_and_grad_fn,
+            params,
+            direction,
+            value,
+            grad,
+            *args,
+            region=region,
+            region_state=region_state,
+            **inner_kwargs,
         )
 
-        # Tighten the bracket: replace the endpoint with the higher fitness.
-        # This keeps the cubic anchored around the lower region.
-        replace_right = lf <= rf
-        n_la = jnp.where(replace_right, la, cand_alpha)
-        n_lf = jnp.where(replace_right, lf, cf)
-        n_lm = jnp.where(replace_right, lm, cm)
-        n_ra = jnp.where(replace_right, cand_alpha, ra)
-        n_rf = jnp.where(replace_right, cf, rf)
-        n_rm = jnp.where(replace_right, cm, rm)
+        # 2. Control points: alpha=0 (current point) and the inner result.
+        a0 = jnp.asarray(0.0, dtype=dtype)
+        f0 = value
+        m0 = tree_vdot(grad, direction)  # slope at alpha=0 is gᵀd
 
-        return (
-            n_la,
-            n_lf,
-            n_lm,
-            n_ra,
-            n_rf,
-            n_rm,
-            n_ba,
-            n_bv,
-            n_bp,
-            n_bg,
-            i + 1,
+        a1 = inner.step_size
+        f1 = inner.new_value
+        m1 = tree_vdot(inner.new_grad, direction)
+
+        # Best-so-far starts at the inner search's accepted point.
+        InitCarry = (
+            a0,
+            f0,
+            m0,
+            a1,
+            f1,
+            m1,
+            inner.step_size,
+            inner.new_value,
+            inner.new_params,
+            inner.new_grad,
+            jnp.asarray(0, jnp.int32),
         )
 
-    final = jax.lax.while_loop(cond, body, InitCarry)
-    (_, _, _, _, _, _, fa, fv, fp, fg, _) = final
+        def cond(carry):
+            (_, _, _, _, _, _, _, _, _, _, i) = carry
+            return i < spline_max_iter
 
-    done = armijo_ok(fa, fv)
-    return LineSearchResult(
-        step_size=fa,
-        new_value=fv,
-        new_grad=fg,
-        new_params=fp,
-        done=done,
-    )
+        def body(carry):
+            (la, lf, lm, ra, rf, rm, ba, bv, bp, bg, i) = carry
+
+            # Stationary points of the cubic over the bracket [la, ra].
+            t_cands, v_cands, valid = _segment_stationary_candidates(
+                la, ra, lf, lm, rf, rm
+            )
+
+            # Midpoint fallback when no stationary point is valid.
+            mid = 0.5 * (la + ra)
+            any_valid = jnp.any(valid)
+            best_c_idx = jnp.argmin(v_cands)
+            cand_alpha = jnp.where(any_valid, t_cands[best_c_idx], mid)
+
+            # Keep the proposal strictly inside the bracket for progress.
+            lo = jnp.minimum(la, ra)
+            hi = jnp.maximum(la, ra)
+            span = hi - lo
+            margin = 1e-3 * jnp.maximum(span, 1e-12)
+            cand_alpha = jnp.clip(cand_alpha, lo + margin, hi - margin)
+
+            # Evaluate the proposed step on the consistent path.
+            cp, cf, cg, cm = eval_at(cand_alpha)
+
+            # Keep the spline probe only if it genuinely improves.
+            improves = cf < bv
+            n_ba = jnp.where(improves, cand_alpha, ba)
+            n_bv = jnp.where(improves, cf, bv)
+            n_bp = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(improves, new, old), cp, bp
+            )
+            n_bg = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(improves, new, old), cg, bg
+            )
+
+            # Tighten the bracket toward the lower-fitness endpoint.
+            replace_right = lf <= rf
+            n_la = jnp.where(replace_right, la, cand_alpha)
+            n_lf = jnp.where(replace_right, lf, cf)
+            n_lm = jnp.where(replace_right, lm, cm)
+            n_ra = jnp.where(replace_right, cand_alpha, ra)
+            n_rf = jnp.where(replace_right, cf, rf)
+            n_rm = jnp.where(replace_right, cm, rm)
+
+            return (
+                n_la,
+                n_lf,
+                n_lm,
+                n_ra,
+                n_rf,
+                n_rm,
+                n_ba,
+                n_bv,
+                n_bp,
+                n_bg,
+                i + 1,
+            )
+
+        final = jax.lax.while_loop(cond, body, InitCarry)
+        (_, _, _, _, _, _, fa, fv, fp, fg, _) = final
+
+        # The spline only ever *improves* on the inner result, so the
+        # acceptance status is at least as good as the inner search's.
+        done = jnp.logical_or(inner.done, fv < inner.new_value)
+        return LineSearchResult(
+            step_size=fa,
+            new_value=fv,
+            new_grad=fg,
+            new_params=fp,
+            done=done,
+        )
+
+    return wrapped
 
 
-__all__ = ["spline_search"]
+__all__ = ["spline_wrap"]

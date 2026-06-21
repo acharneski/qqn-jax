@@ -163,6 +163,7 @@ def _run_qqn_configured(
     line_search_options=None,
     oracle="lbfgs",
     region=None,
+    spline: bool = False,
 ):
     """Run a configurable QQN variant.
 
@@ -177,6 +178,7 @@ def _run_qqn_configured(
         line_search_options=line_search_options,
         oracle=oracle,
         region=region,
+        spline=spline,
     )
 
     # Run one update at a time to record the loss trajectory.
@@ -307,7 +309,7 @@ def main():
             loss_fn,
             params0,
             maxiter,
-            line_search="spline",
+            spline=True,
         ),
         # --- QQN with a momentum oracle instead of L-BFGS ---
         "QQN-Mom": lambda: _run_qqn_configured(

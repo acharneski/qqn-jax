@@ -24,7 +24,7 @@ from qqn_jax.line_search import (
     hager_zhang_search,
     strong_wolfe_search,
 )
-from qqn_jax.spline_search import spline_search
+from qqn_jax.spline_search import spline_wrap
 from qqn_jax.oracles import OracleInfo, resolve_oracle
 from qqn_jax.regions import RegionInfo, resolve_region
 from qqn_jax.utils import (
@@ -104,7 +104,7 @@ class QQN:
         history_size: int = 10,
         line_search: str = "armijo",
         line_search_options: Optional[Dict[str, Any]] = None,
-         spline: bool = False,
+        spline: bool = False,
         has_aux: bool = False,
         t_grid: Optional[jnp.ndarray] = None,
         region=None,
@@ -132,15 +132,17 @@ class QQN:
                 f"Unknown line_search: {line_search!r}. "
                 f"Available: {sorted(_LINE_SEARCHES)}."
             )
-         # The spline refinement is orthogonal to the chosen line search: when
-         # enabled it reuses every probe (with its gradient) as a control point
-             # of a cubic Hermite spline. It composes with any line search.
-        base_ls = spline_search if self.spline else _LINE_SEARCHES[line_search]
+        # The spline refinement is orthogonal to the chosen line search: rather
+        # than replacing it, it *wraps* it. The spline is an expanded definition
+        # of the curve — it reuses every probe (with its gradient) as a control
+        # point of a cubic Hermite spline along the consistent path, then tries
+        # to improve on the inner search's accepted point. It composes with any
+        # line search.
+        base_ls = _LINE_SEARCHES[line_search]
         opts = self.line_search_options
         if opts:
-            self._ls = partial(base_ls, **opts)
-        else:
-            self._ls = base_ls
+            base_ls = partial(base_ls, **opts)
+        self._ls = spline_wrap(base_ls) if self.spline else base_ls
 
     # --- Internal helpers -------------------------------------------------
 
