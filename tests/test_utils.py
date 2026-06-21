@@ -10,7 +10,6 @@ from qqn_jax.utils import (
     tree_vdot,
 )
 
-
 def test_quadratic_path_endpoints():
     grad_dir = jnp.array([1.0, 2.0, 3.0])
     qn_dir = jnp.array([-1.0, 0.0, 1.0])

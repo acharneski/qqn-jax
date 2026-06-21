@@ -1,20 +1,17 @@
 """L-BFGS oracle wrapper.
 
-This module wraps a limited-memory BFGS two-loop recursion as a single-step
-*oracle*. Given the current gradient and a history of (s, y) pairs, it
-produces the quasi-Newton direction ``-H∇f`` where ``H`` is the implicit
-inverse-Hessian approximation.
+This module delegates the limited-memory BFGS two-loop recursion to
+JAXopt's proven ``inv_hessian_product`` implementation, exposing it as a
+single-step *oracle* that produces the quasi-Newton direction ``-H∇f``.
 
-The state is stored in a JIT-compatible NamedTuple with fixed-size circular
-buffers so the whole thing can live inside ``lax`` control flow.
+We keep our own thin, fixed-size circular-buffer state so the whole thing
+stays JIT/vmap compatible and so the oracle remains swappable.
 """
 
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
-
-from qqn_jax.utils import tree_vdot
+from jaxopt._src.lbfgs import inv_hessian_product
 
 
 class LBFGSState(NamedTuple):
@@ -57,6 +54,11 @@ def update_lbfgs_history(
     state: LBFGSState, params, grad, history_size: int
 ) -> LBFGSState:
     """Push a new (s, y) pair into the circular history buffer.
+
+    JAXopt's ``inv_hessian_product`` expects the *oldest* entry first and
+    treats unfilled (zero) slots as no-ops, so we append at the end via a
+    roll-by-one toward index 0... actually we keep most-recent-first and
+    flip when calling the oracle (see ``lbfgs_direction``).
 
     The update is only applied if the curvature condition ``yᵀs > eps`` is
     satisfied; otherwise the history is left unchanged (a standard L-BFGS
@@ -106,46 +108,21 @@ def update_lbfgs_history(
 
 
 def lbfgs_direction(state: LBFGSState, grad) -> jnp.ndarray:
-    """Compute the L-BFGS direction ``-H∇f`` via the two-loop recursion.
+    """Compute the L-BFGS direction ``-H∇f`` via JAXopt's two-loop recursion.
 
-    Inactive history slots (index >= count) are masked out so the result is
-    correct even before the buffer has filled up.
+    JAXopt's ``inv_hessian_product`` returns ``H∇f`` (the product of the
+    implicit inverse Hessian with the gradient), so the descent direction
+    is its negation.
+
+    JAXopt orders history oldest-first; we store most-recent-first, so we
+    flip the buffers before the call. Unfilled slots are zero (s=y=rho=0),
+    which contribute nothing to the recursion, so masking is automatic.
     """
-    history_size = state.s_history.shape[0]
-    idx = jnp.arange(history_size)
-    active = idx < state.count  # shape (history_size,)
-
-    q = grad
-
-    # First loop (recent -> old).
-    def first_loop(carry, i):
-        q = carry
-        s_i = state.s_history[i]
-        y_i = state.y_history[i]
-        rho_i = state.rho_history[i]
-        is_active = active[i]
-        alpha_i = jnp.where(is_active, rho_i * jnp.vdot(s_i, q), 0.0)
-        q = q - jnp.where(is_active, alpha_i, 0.0) * y_i
-        return q, alpha_i
-
-    q, alphas = jax.lax.scan(first_loop, q, idx)
-
-    # Initial Hessian scaling: H0 = gamma * I.
-    r = state.gamma * q
-
-    # Second loop (old -> recent).
-    def second_loop(carry, i):
-        r = carry
-        s_i = state.s_history[i]
-        y_i = state.y_history[i]
-        rho_i = state.rho_history[i]
-        alpha_i = alphas[i]
-        is_active = active[i]
-        beta = jnp.where(is_active, rho_i * jnp.vdot(y_i, r), 0.0)
-        r = r + jnp.where(is_active, alpha_i - beta, 0.0) * s_i
-        return r, None
-
-    r, _ = jax.lax.scan(second_loop, r, idx, reverse=True)
-
-    # Direction is -H∇f.
-    return -r
+    pytree_product = inv_hessian_product(
+        pytree=grad,
+        s_history=jnp.flip(state.s_history, axis=0),
+        y_history=jnp.flip(state.y_history, axis=0),
+        rho_history=jnp.flip(state.rho_history, axis=0),
+        gamma=state.gamma,
+    )
+    return -pytree_product
