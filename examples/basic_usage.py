@@ -10,9 +10,7 @@ from qqn_jax import QQN
 
 
 def rosenbrock(x):
-    return jnp.sum(
-        100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1.0 - x[:-1]) ** 2
-    )
+    return jnp.sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1.0 - x[:-1]) ** 2)
 
 
 def main():
@@ -34,9 +32,7 @@ def main():
     print(f"  solution: {params_j}")
 
     # 3. Batched over multiple starting points.
-    x0_batch = jnp.array(
-        [[-1.2, 1.0], [2.0, 2.0], [-0.5, 0.5]]
-    )
+    x0_batch = jnp.array([[-1.2, 1.0], [2.0, 2.0], [-0.5, 0.5]])
     batched = jax.vmap(solver.run)
     params_b, states_b = batched(x0_batch)
     print("\n=== Batched ===")

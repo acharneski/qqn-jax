@@ -8,9 +8,7 @@ from qqn_jax import QQN
 
 
 def rosenbrock(x):
-    return jnp.sum(
-        100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1.0 - x[:-1]) ** 2
-    )
+    return jnp.sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1.0 - x[:-1]) ** 2)
 
 
 def quadratic(x):
@@ -61,9 +59,7 @@ def test_run_is_jittable():
 
 def test_run_is_vmappable():
     solver = QQN(quadratic, maxiter=100, tol=1e-6)
-    x0_batch = jnp.array(
-        [[5.0, -3.0, 2.0], [1.0, 1.0, 1.0], [-2.0, 4.0, -1.0]]
-    )
+    x0_batch = jnp.array([[5.0, -3.0, 2.0], [1.0, 1.0, 1.0], [-2.0, 4.0, -1.0]])
     batched = jax.vmap(solver.run)
     params, states = batched(x0_batch)
     assert params.shape == (3, 3)
@@ -71,9 +67,7 @@ def test_run_is_vmappable():
 
 
 def test_backtracking_line_search_option():
-    solver = QQN(
-        quadratic, maxiter=200, tol=1e-5, line_search="backtracking"
-    )
+    solver = QQN(quadratic, maxiter=200, tol=1e-5, line_search="backtracking")
     x0 = jnp.array([5.0, -3.0, 2.0])
     params, state = solver.run(x0)
     assert float(state.error) < 1e-3

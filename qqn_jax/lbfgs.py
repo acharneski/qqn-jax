@@ -135,9 +135,7 @@ def lbfgs_direction(state: LBFGSState, grad) -> jnp.ndarray:
         q = q - alpha_i * y_i
         return q, alpha_i
 
-    q, alphas = jax.lax.scan(
-        first_loop, grad, (s_hist, y_hist, rho_hist)
-    )
+    q, alphas = jax.lax.scan(first_loop, grad, (s_hist, y_hist, rho_hist))
 
     # Apply initial Hessian approximation H0 = gamma * I.
     r = state.gamma * q

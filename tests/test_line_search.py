@@ -18,9 +18,7 @@ def test_backtracking_decreases_value():
     x = jnp.array([2.0, 2.0])
     value, grad = quad_value_and_grad(x)
     direction = -grad  # steepest descent
-    res = backtracking_search(
-        quad_value_and_grad, x, direction, value, grad
-    )
+    res = backtracking_search(quad_value_and_grad, x, direction, value, grad)
     assert float(res.new_value) < float(value)
     assert bool(res.done)
 
@@ -29,9 +27,7 @@ def test_strong_wolfe_decreases_value():
     x = jnp.array([2.0, 2.0])
     value, grad = quad_value_and_grad(x)
     direction = -grad
-    res = strong_wolfe_search(
-        quad_value_and_grad, x, direction, value, grad
-    )
+    res = strong_wolfe_search(quad_value_and_grad, x, direction, value, grad)
     assert float(res.new_value) < float(value)
 
 
@@ -40,9 +36,7 @@ def test_strong_wolfe_finds_exact_step_for_quadratic():
     x = jnp.array([3.0, -1.0])
     value, grad = quad_value_and_grad(x)
     direction = -grad
-    res = strong_wolfe_search(
-        quad_value_and_grad, x, direction, value, grad
-    )
+    res = strong_wolfe_search(quad_value_and_grad, x, direction, value, grad)
     # New params should be near the origin.
     assert float(jnp.linalg.norm(res.new_params)) < 0.5
 
@@ -52,9 +46,9 @@ def test_line_search_jittable():
     value, grad = quad_value_and_grad(x)
     direction = -grad
     fn = jax.jit(
-        lambda x, d, v, g: strong_wolfe_search(
-            quad_value_and_grad, x, d, v, g
-        ).step_size
+        lambda x, d, v, g: (
+            strong_wolfe_search(quad_value_and_grad, x, d, v, g).step_size
+        )
     )
     step = fn(x, direction, value, grad)
     assert float(step) > 0.0

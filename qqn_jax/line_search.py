@@ -113,8 +113,8 @@ def strong_wolfe_search(
     """
 
     def fun_only(p, *fa, **fkw):
-       v, _ = value_and_grad_fn(p, *args)
-       return v
+        v, _ = value_and_grad_fn(p, *args)
+        return v
 
     ls = optax.scale_by_zoom_linesearch(
         max_linesearch_steps=max_iter,

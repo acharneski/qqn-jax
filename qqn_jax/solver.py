@@ -175,13 +175,9 @@ class QQN:
 
         # Pick the candidate with the smallest resulting value.
         best_idx = jnp.argmin(results.new_value)
-        new_params = jax.tree_util.tree_map(
-            lambda a: a[best_idx], results.new_params
-        )
+        new_params = jax.tree_util.tree_map(lambda a: a[best_idx], results.new_params)
         new_value = results.new_value[best_idx]
-        new_grad = jax.tree_util.tree_map(
-            lambda a: a[best_idx], results.new_grad
-        )
+        new_grad = jax.tree_util.tree_map(lambda a: a[best_idx], results.new_grad)
         step_size = results.step_size[best_idx]
 
         # Recompute aux at the accepted point if needed.
@@ -227,7 +223,5 @@ class QQN:
             new_params, new_state = self.update(params, state, *args)
             return new_params, new_state
 
-        final_params, final_state = jax.lax.while_loop(
-            cond, body, (init_params, state)
-        )
+        final_params, final_state = jax.lax.while_loop(cond, body, (init_params, state))
         return final_params, final_state
