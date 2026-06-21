@@ -252,10 +252,10 @@ def run_optax_lbfgs(loss_fn, params0, maxiter):
 
 
 def main():
-    # Problem configuration (small by design for fast, full-batch training).
-    n_classes = 3
-    n_train = 1500
-    n_test = 500
+    # Problem configuration
+    n_classes = 10
+    n_train = 5000
+    n_test = 1000
     maxiter = 100
 
     print("=== MNIST optimizer comparison: QQN vs SGD vs Adam vs L-BFGS ===")
@@ -316,6 +316,20 @@ def main():
             maxiter,
             oracle=MomentumOracle(beta=0.9),
         ),
+        # --- A/B (oracle): momentum with heavier damping for stability ---
+        "QQN-Mom99": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=MomentumOracle(beta=0.99),
+        ),
+        # --- A/B (oracle): lighter L-BFGS history (size 5) — cheap memory ---
+        "QQN-L5": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=5),
+        ),
         # --- QQN with a deeper L-BFGS history (richer curvature memory) ---
         "QQN-L20": lambda: _run_qqn_configured(
             loss_fn,
@@ -323,12 +337,26 @@ def main():
             maxiter,
             oracle=LBFGSOracle(history_size=20),
         ),
+        # --- A/B (oracle): even deeper L-BFGS memory (size 50) ---
+        "QQN-L50": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=50),
+        ),
         # --- QQN with a Shampoo (structure-aware) oracle ---
         "QQN-Shmp": lambda: _run_qqn_configured(
             loss_fn,
             params0,
             maxiter,
             oracle=ShampooOracle(update_freq=1),
+        ),
+        # --- A/B (oracle): Shampoo with amortized updates (freq=5) — cheaper ---
+        "QQN-Shmp5": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=ShampooOracle(update_freq=5),
         ),
         # --- QQN with a Fallback oracle: L-BFGS, else momentum ---
         "QQN-Fall": lambda: _run_qqn_configured(
@@ -351,6 +379,27 @@ def main():
             maxiter,
             region=TrustRegion(radius=1.0, adaptive=True),
         ),
+        # --- A/B (region): tighter adaptive trust-region (radius=0.5) ---
+        "QQN-TR05": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=TrustRegion(radius=0.5, adaptive=True),
+        ),
+        # --- A/B (region): wider adaptive trust-region (radius=2.0) ---
+        "QQN-TR20": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=TrustRegion(radius=2.0, adaptive=True),
+        ),
+        # --- A/B (region): fixed (non-adaptive) trust-region control ---
+        "QQN-TRfix": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=TrustRegion(radius=1.0, adaptive=False),
+        ),
         # --- QQN with an orthant region (OWL-QN-style sparsity) ---
         "QQN-Orth": lambda: _run_qqn_configured(
             loss_fn,
@@ -365,6 +414,26 @@ def main():
             maxiter,
             line_search="strong_wolfe",
             region=TrustRegion(radius=1.0, adaptive=True),
+        ),
+        # --- Best-of-breed: deep L-BFGS (size 20) + Hager-Zhang line search.
+        #     Combines the fastest-converging oracle (L20: 53 iters) with the
+        #     efficient Wolfe line search to probe for a new pareto winner. ---
+        "QQN-L20HZ": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="hager_zhang",
+            oracle=LBFGSOracle(history_size=20),
+        ),
+        # --- Best-of-breed: deep L-BFGS (size 20) + backtracking line search.
+        #     Pairs the strongest oracle with the cheapest robust search
+        #     (BT was the fastest wall-time at 0.500s) for speed. ---
+        "QQN-L20BT": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="backtracking",
+            oracle=LBFGSOracle(history_size=20),
         ),
         # --- Combined: deep L-BFGS oracle + box constraint ---
         "QQN-L20Box": lambda: _run_qqn_configured(
@@ -429,6 +498,42 @@ def main():
         idxs = np.linspace(0, len(hist) - 1, sample_points).astype(int)
         vals = [f"{np.log10(max(hist[i], 1e-12)):6.2f}" for i in idxs]
         print(f"  {name:<8} " + " ".join(vals))
+
+    # --- A/B comparison report -------------------------------------------
+    # Each pair isolates a single variable (oracle depth, region radius,
+    # line search, etc.) against a named baseline so the effect is causal.
+    ab_pairs = [
+        ("oracle: L-BFGS history", "QQN", "QQN-L5", "QQN-L20", "QQN-L50"),
+        ("oracle: momentum beta", "QQN-Mom", "QQN-Mom99"),
+        ("oracle: Shampoo update_freq", "QQN-Shmp", "QQN-Shmp5"),
+        ("region: trust radius", "QQN-TR05", "QQN-TR", "QQN-TR20"),
+        ("region: trust adaptivity", "QQN-TRfix", "QQN-TR"),
+        (
+            "search: L20 line search",
+            "QQN-L20",
+            "QQN-L20BT",
+            "QQN-L20HZ",
+        ),
+    ]
+
+    print("\nA/B controlled comparisons (vs first column = baseline):")
+
+    for title, *variants in ab_pairs:
+        present = [v for v in variants if v in results]
+        if len(present) < 2:
+            continue
+        base = results[present[0]]
+        print(f"  [{title}]")
+        for v in present:
+            r = results[v]
+            d_iters = r["iters"] - base["iters"]
+            d_wall = r["wall"] - base["wall"]
+            marker = " (baseline)" if v == present[0] else ""
+            print(
+                f"    {v:<11} iters={r['iters']:>3} (Δ{d_iters:+d})"
+                f"  loss={r['final_loss']:.3e}"
+                f"  time={r['wall']:.3f}s (Δ{d_wall:+.3f}){marker}"
+            )
 
     # Optional: save a matplotlib plot if available.
     try:
