@@ -26,15 +26,15 @@ import optax
 
 from qqn_jax import QQN
 from qqn_jax.oracles import (
-     LBFGSOracle,
-     MomentumOracle,
-     ShampooOracle,
-     Fallback,
+    LBFGSOracle,
+    MomentumOracle,
+    ShampooOracle,
+    Fallback,
 )
 from qqn_jax.regions import (
-     BoxRegion,
-     TrustRegion,
-     OrthantRegion,
+    BoxRegion,
+    TrustRegion,
+    OrthantRegion,
 )
 
 
@@ -151,32 +151,32 @@ def accuracy(params, X, y, dim, n_classes):
 
 def run_qqn(loss_fn, params0, maxiter):
     """Run QQN and return (final_params, history_of_losses, wall_time)."""
-     return _run_qqn_configured(loss_fn, params0, maxiter)
+    return _run_qqn_configured(loss_fn, params0, maxiter)
 
 
 def _run_qqn_configured(
-     loss_fn,
-     params0,
-     maxiter,
-     line_search="armijo",
-     line_search_options=None,
-     oracle="lbfgs",
-     region=None,
+    loss_fn,
+    params0,
+    maxiter,
+    line_search="armijo",
+    line_search_options=None,
+    oracle="lbfgs",
+    region=None,
 ):
-     """Run a configurable QQN variant.
+    """Run a configurable QQN variant.
 
-     Exposes QQN's swappable components — the *oracle* (curvature source),
-     the *line search* (step-size selection), and the *region* (projective
-     constraint) — so we can benchmark several QQN flavours side-by-side.
-     """
-     solver = QQN(
-         loss_fn,
-         maxiter=maxiter,
-         line_search=line_search,
-         line_search_options=line_search_options,
-         oracle=oracle,
-         region=region,
-     )
+    Exposes QQN's swappable components — the *oracle* (curvature source),
+    the *line search* (step-size selection), and the *region* (projective
+    constraint) — so we can benchmark several QQN flavours side-by-side.
+    """
+    solver = QQN(
+        loss_fn,
+        maxiter=maxiter,
+        line_search=line_search,
+        line_search_options=line_search_options,
+        oracle=oracle,
+        region=region,
+    )
 
     # Run one update at a time to record the loss trajectory.
     state = solver.init_state(params0)
@@ -258,7 +258,7 @@ def main():
     maxiter = 100
 
     print("=== MNIST optimizer comparison: QQN vs SGD vs Adam vs L-BFGS ===")
-     print("    (QQN variants: line search / oracle / region)")
+    print("    (QQN variants: line search / oracle / region)")
     print(
         f"  classes={n_classes}  n_train={n_train}  n_test={n_test}  "
         f"maxiter={maxiter}\n"
@@ -278,57 +278,57 @@ def main():
     params0 = init_params(dim, n_classes, jax.random.PRNGKey(42))
 
     runners = {
-         # --- Baseline QQN (L-BFGS oracle, Armijo line search) ---
-         "QQN": lambda: run_qqn(loss_fn, params0, maxiter),
-         # --- QQN with a strong-Wolfe line search (tighter curvature) ---
-         "QQN-SW": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             line_search="strong_wolfe",
-         ),
-         # --- QQN with a momentum oracle instead of L-BFGS ---
-         "QQN-Mom": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             oracle=MomentumOracle(beta=0.9),
-         ),
-         # --- QQN with a Shampoo (structure-aware) oracle ---
-         "QQN-Shmp": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             oracle=ShampooOracle(update_freq=10),
-         ),
-         # --- QQN with a Fallback oracle: L-BFGS, else momentum ---
-         "QQN-Fall": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             oracle=Fallback([LBFGSOracle(history_size=10), MomentumOracle()]),
-         ),
-         # --- QQN constrained to a box region (bounded weights) ---
-         "QQN-Box": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             region=BoxRegion(lo=-2.0, hi=2.0),
-         ),
-         # --- QQN with an adaptive trust-region sphere ---
-         "QQN-TR": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             region=TrustRegion(radius=1.0, adaptive=True),
-         ),
-         # --- QQN with an orthant region (OWL-QN-style sparsity) ---
-         "QQN-Orth": lambda: _run_qqn_configured(
-             loss_fn,
-             params0,
-             maxiter,
-             region=OrthantRegion(),
-         ),
+        # --- Baseline QQN (L-BFGS oracle, Armijo line search) ---
+        "QQN": lambda: run_qqn(loss_fn, params0, maxiter),
+        # --- QQN with a strong-Wolfe line search (tighter curvature) ---
+        "QQN-SW": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="strong_wolfe",
+        ),
+        # --- QQN with a momentum oracle instead of L-BFGS ---
+        "QQN-Mom": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=MomentumOracle(beta=0.9),
+        ),
+        # --- QQN with a Shampoo (structure-aware) oracle ---
+        "QQN-Shmp": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=ShampooOracle(update_freq=10),
+        ),
+        # --- QQN with a Fallback oracle: L-BFGS, else momentum ---
+        "QQN-Fall": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=Fallback([LBFGSOracle(history_size=10), MomentumOracle()]),
+        ),
+        # --- QQN constrained to a box region (bounded weights) ---
+        "QQN-Box": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=BoxRegion(lo=-2.0, hi=2.0),
+        ),
+        # --- QQN with an adaptive trust-region sphere ---
+        "QQN-TR": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=TrustRegion(radius=1.0, adaptive=True),
+        ),
+        # --- QQN with an orthant region (OWL-QN-style sparsity) ---
+        "QQN-Orth": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            region=OrthantRegion(),
+        ),
         "SGD": lambda: run_optax(
             loss_fn, params0, optax.sgd(learning_rate=0.5), maxiter
         ),
@@ -343,29 +343,29 @@ def main():
         params, history, wall = runner()
         train_acc = float(accuracy(params, X_train, y_train, dim, n_classes))
         test_acc = float(accuracy(params, X_test, y_test, dim, n_classes))
-         # Fraction of (near-)zero weights — illuminating for the orthant region.
-         sparsity = float(jnp.mean((jnp.abs(params) < 1e-6).astype(jnp.float32)))
+        # Fraction of (near-)zero weights — illuminating for the orthant region.
+        sparsity = float(jnp.mean((jnp.abs(params) < 1e-6).astype(jnp.float32)))
         results[name] = {
             "final_loss": history[-1],
             "iters": len(history) - 1,
             "train_acc": train_acc,
             "test_acc": test_acc,
             "wall": wall,
-             "sparsity": sparsity,
+            "sparsity": sparsity,
             "history": history,
         }
 
     # --- Summary table ---
     print(
         f"{'optimizer':<10}{'final_loss':>14}{'iters':>8}"
-         f"{'train_acc':>12}{'test_acc':>11}{'sparsity':>10}{'time(s)':>10}"
+        f"{'train_acc':>12}{'test_acc':>11}{'sparsity':>10}{'time(s)':>10}"
     )
-     print("-" * 75)
+    print("-" * 75)
     for name, r in results.items():
         print(
             f"{name:<10}{r['final_loss']:>14.6e}{r['iters']:>8}"
             f"{r['train_acc']:>12.4f}{r['test_acc']:>11.4f}"
-             f"{r['sparsity']:>10.4f}{r['wall']:>10.3f}"
+            f"{r['sparsity']:>10.4f}{r['wall']:>10.3f}"
         )
 
     # --- Loss trajectory (compact ASCII view at log10 scale) ---
@@ -382,16 +382,16 @@ def main():
         import matplotlib.pyplot as plt  # type: ignore
 
         plt.figure(figsize=(7, 5))
-         baselines = {"SGD", "Adam", "L-BFGS"}
+        baselines = {"SGD", "Adam", "L-BFGS"}
         for name, r in results.items():
-             if name in baselines:
-                 plt.semilogy(r["history"], label=name, linestyle="--", linewidth=2)
-             else:
-                 plt.semilogy(r["history"], label=name, alpha=0.85)
+            if name in baselines:
+                plt.semilogy(r["history"], label=name, linestyle="--", linewidth=2)
+            else:
+                plt.semilogy(r["history"], label=name, alpha=0.85)
         plt.xlabel("iteration")
         plt.ylabel("full-batch loss")
-         plt.title("MNIST optimizer comparison (QQN variants vs baselines)")
-         plt.legend(ncol=2, fontsize=8)
+        plt.title("MNIST optimizer comparison (QQN variants vs baselines)")
+        plt.legend(ncol=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
         out = "mnist_comparison.png"
         plt.savefig(out, dpi=120, bbox_inches="tight")
