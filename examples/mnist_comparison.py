@@ -35,7 +35,6 @@ from qqn_jax.regions import (
     BoxRegion,
     TrustRegion,
     OrthantRegion,
-    Sequential,
 )
 
 
@@ -185,15 +184,17 @@ def _run_qqn_configured(
     state = solver.init_state(params0)
     params = params0
     history = [float(state.value)]
+    times = [0.0]
     t0 = time.perf_counter()
     update = jax.jit(solver.update)
     for _ in range(maxiter):
         params, state = update(params, state)
         history.append(float(state.value))
+        times.append(time.perf_counter() - t0)
         if bool(state.done):
             break
     wall = time.perf_counter() - t0
-    return params, history, wall
+    return params, history, wall, times
 
 
 def run_optax(loss_fn, params0, optimizer, maxiter):
@@ -297,13 +298,6 @@ def main():
             maxiter,
             line_search="backtracking",
         ),
-        # --- QQN with Hager-Zhang line search (efficient Wolfe variant) ---
-        "QQN-HZ": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            line_search="hager_zhang",
-        ),
         # --- QQN with a cubic Hermite spline line search ---
         "QQN-Spln": lambda: _run_qqn_configured(
             loss_fn,
@@ -330,6 +324,31 @@ def main():
             maxiter,
             spline=True,
             region=TrustRegion(radius=1.0, adaptive=True),
+        ),
+        # --- Best-of-breed (spline): full stack — deep L-BFGS (L50) + cubic
+        "QQN-L50SplnTR": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=50),
+            spline=True,
+            region=TrustRegion(radius=1.0, adaptive=True),
+        ),
+        # --- Best-of-breed (spline): deepest memory (L100) + spline. Extends
+        "QQN-L100Spln": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=100),
+            spline=True,
+        ),
+        # --- Best-of-breed (spline): spline refinement on top of the cheap
+        "QQN-BTSpln": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="backtracking",
+            spline=True,
         ),
         # --- QQN with a momentum oracle instead of L-BFGS ---
         "QQN-Mom": lambda: _run_qqn_configured(
@@ -384,13 +403,6 @@ def main():
             maxiter,
             oracle=LBFGSOracle(history_size=100),
         ),
-        # --- QQN with a Shampoo (structure-aware) oracle ---
-        "QQN-Shmp": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            oracle=ShampooOracle(update_freq=1),
-        ),
         # --- QQN with a Fallback oracle: L-BFGS, else momentum ---
         "QQN-Fall": lambda: _run_qqn_configured(
             loss_fn,
@@ -412,14 +424,6 @@ def main():
             maxiter,
             region=TrustRegion(radius=1.0, adaptive=True),
         ),
-        # --- A/B (region): tighter adaptive trust-region (radius=0.5) ---
-        "QQN-TR05": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            region=TrustRegion(radius=0.5, adaptive=True),
-        ),
-        # --- A/B (region): wider adaptive trust-region (radius=2.0) ---
         # --- A/B (region): very tight adaptive trust-region (radius=0.25),
         #     extends the radius sweep (0.25 -> 0.5 -> 1.0 -> 2.0) to probe
         #     whether over-constraining the step harms convergence. ---
@@ -461,26 +465,6 @@ def main():
             line_search="hager_zhang",
             oracle=LBFGSOracle(history_size=20),
         ),
-        # --- Best-of-breed: deep L-BFGS (size 20) + backtracking line search.
-        #     Pairs the strongest oracle with the cheapest robust search
-        #     (BT was the fastest wall-time at 0.500s) for speed. ---
-        "QQN-L20BT": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            line_search="backtracking",
-            oracle=LBFGSOracle(history_size=20),
-        ),
-        # --- Best-of-breed: the strongest oracle (L50: lowest loss 1.025e-01)
-        #     paired with cheap robust backtracking. Probes whether the deepest
-        #     practical history reaches a new pareto point on loss vs. time. ---
-        "QQN-L50BT": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            line_search="backtracking",
-            oracle=LBFGSOracle(history_size=50),
-        ),
         # --- Best-of-breed: L50 oracle + adaptive trust-region. Tests whether
         #     curvature-rich steps benefit from the trust-region safeguard. ---
         "QQN-L50TR": lambda: _run_qqn_configured(
@@ -499,16 +483,6 @@ def main():
             maxiter,
             oracle=LBFGSOracle(history_size=100),
             region=TrustRegion(radius=1.0, adaptive=True),
-        ),
-        # --- Best-of-breed: L100 oracle + cheap backtracking search. Pairs the
-        #     deepest-memory oracle with the fastest robust line search (BT) to
-        #     target the lowest loss at minimal wall-time (pareto speed). ---
-        "QQN-L100BT": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            line_search="backtracking",
-            oracle=LBFGSOracle(history_size=100),
         ),
         # --- Best-of-breed triple: L50 oracle + backtracking + trust-region.
         #     Combines the strongest pareto components — deep curvature memory,
@@ -530,14 +504,6 @@ def main():
             oracle=LBFGSOracle(history_size=20),
             region=BoxRegion(lo=-2.0, hi=2.0),
         ),
-        # --- Combined: Fallback oracle + Sequential (box ∩ trust) region ---
-        "QQN-Stack": lambda: _run_qqn_configured(
-            loss_fn,
-            params0,
-            maxiter,
-            oracle=Fallback([LBFGSOracle(history_size=10), MomentumOracle(beta=0.9)]),
-            region=Sequential([BoxRegion(lo=-2.0, hi=2.0), TrustRegion(radius=2.0)]),
-        ),
         "SGD": lambda: run_optax(
             loss_fn, params0, optax.sgd(learning_rate=0.5), maxiter
         ),
@@ -549,7 +515,7 @@ def main():
 
     results = {}
     for name, runner in runners.items():
-        params, history, wall = runner()
+        params, history, wall, times = runner()
         train_acc = float(accuracy(params, X_train, y_train, dim, n_classes))
         test_acc = float(accuracy(params, X_test, y_test, dim, n_classes))
         # Fraction of (near-)zero weights — illuminating for the orthant region.
@@ -562,6 +528,7 @@ def main():
             "wall": wall,
             "sparsity": sparsity,
             "history": history,
+            "times": times,
         }
 
     # --- Summary table ---
@@ -607,34 +574,24 @@ def main():
         (
             "region: trust radius",
             "QQN-TR025",
-            "QQN-TR05",
             "QQN-TR",
         ),
         ("region: trust adaptivity", "QQN-TRfix", "QQN-TR"),
         (
-            "search: L20 line search",
-            "QQN-L20",
-            "QQN-L20BT",
-            "QQN-L20HZ",
-        ),
-        (
-            "search: L50 line search",
-            "QQN-L50",
-            "QQN-L50BT",
-        ),
-        (
-            "search: baseline line search (oracle=L-BFGS-10)",
+            "search: line search (oracle=L-BFGS-10)",
             "QQN",
             "QQN-BT",
-            "QQN-HZ",
             "QQN-SW",
             "QQN-Spln",
         ),
         (
             "spline: best-of-breed refinement",
             "QQN-Spln",
+            "QQN-BTSpln",
             "QQN-L50Spln",
+            "QQN-L100Spln",
             "QQN-SplnTR",
+            "QQN-L50SplnTR",
         ),
         (
             "best-of-breed: L50 region",
@@ -645,7 +602,6 @@ def main():
         (
             "best-of-breed: L100 combos",
             "QQN-L100",
-            "QQN-L100BT",
             "QQN-L100TR",
         ),
     ]
@@ -688,6 +644,23 @@ def main():
         out = "mnist_comparison.png"
         plt.savefig(out, dpi=120, bbox_inches="tight")
         print(f"\n[plot] Saved convergence plot to {out}")
+        # --- Second plot: loss vs wall-clock time ---
+        plt.figure(figsize=(7, 5))
+        for name, r in results.items():
+            if name in baselines:
+                plt.semilogy(
+                    r["times"], r["history"], label=name, linestyle="--", linewidth=2
+                )
+            else:
+                plt.semilogy(r["times"], r["history"], label=name, alpha=0.85)
+        plt.xlabel("wall-clock time (s)")
+        plt.ylabel("full-batch loss")
+        plt.title("MNIST optimizer comparison vs time (QQN variants vs baselines)")
+        plt.legend(ncol=2, fontsize=8)
+        plt.grid(True, which="both", alpha=0.3)
+        out_time = "mnist_comparison_time.png"
+        plt.savefig(out_time, dpi=120, bbox_inches="tight")
+        print(f"[plot] Saved time-based convergence plot to {out_time}")
     except Exception:
         print("\n[plot] matplotlib not available; skipping plot.")
 
