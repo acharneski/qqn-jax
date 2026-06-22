@@ -749,6 +749,39 @@ def main():
             region=TrustRegion(radius=1.0, adaptive=True),
             stop=stop,
         ),
+        # --- Extraterrestrial: the *curvature-consistent* adaptive trust
+        #     region. The naive ρ<0.25 rule stalls at 6.272e-01 because it
+        #     compares chord-length (the clip) against arc-length (the pred
+        #     model) on a curved path. The gentle-shrink, wide-stable-band
+        #     variant holds the radius in [0.1, 0.75] and should *converge*
+        #     where the old adaptive region collapsed — proving the stall was
+        #     geometric, not fundamental. ---
+        "QQN-L50TRcc": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=50),
+            region=TrustRegion(
+                radius=1.0,
+                adaptive=True,
+                shrink=0.5,
+                expand=2.0,
+                eta_lo=0.1,
+                eta_hi=0.75,
+            ),
+            stop=stop,
+        ),
+        # --- Extraterrestrial: the self-scaling Anderson oracle. The β
+        #     coupling constant rescales the deep-residual descent, aiming to
+        #     convert QQN-And's leading AUC (−0.84) into a leading *iteration*
+        #     count without sacrificing trajectory depth. ---
+        "QQN-And2": lambda: _run_qqn_configured(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=AndersonOracle(window=5, beta=1.5),
+            stop=stop,
+        ),
         # --- Best-of-breed: L100 oracle + adaptive trust-region. Extends the
         #     winning L50TR combo (lowest-loss trajectory) to the deeper L100
         #     oracle to push past the 1.024e-01 frontier with the safeguard. ---

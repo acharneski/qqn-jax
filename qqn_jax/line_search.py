@@ -101,6 +101,8 @@ def backtracking_search(
     c1: float = 1e-4,
     shrink: float = 0.5,
     max_iter: int = 30,
+    grow: float = 2.0,
+    max_extrapolate: int = 10,
     grad_dir=None,
     qn_dir=None,
     region=None,
@@ -108,10 +110,14 @@ def backtracking_search(
 ) -> LineSearchResult:
     """Backtracking line search (Armijo) along the quadratic path.
 
-    Repeatedly shrinks the path parameter ``t`` by ``shrink`` until the
-    Armijo sufficient-decrease condition holds or ``max_iter`` is reached.
-    Each probe evaluates the *state* ``x + d(t)`` on the curve. Implemented
-    with ``lax.while_loop`` to stay JIT/vmap compatible.
+     The search first *extrapolates*: starting from ``init_step`` it grows the
+     path parameter ``t`` by ``grow`` while the Armijo condition holds and the
+     fitness keeps strictly improving (so a still-descending oracle point at
+     ``t = 1`` is pushed out to ``t = 2, 4, ...`` up to ``max_extrapolate``
+     steps). It then *backtracks*: it shrinks ``t`` by ``shrink`` until the
+     Armijo sufficient-decrease condition holds or ``max_iter`` is reached.
+     Each probe evaluates the *state* ``x + d(t)`` on the curve. Implemented
+     with ``lax.while_loop`` to stay JIT/vmap compatible.
 
     If a ``region`` is supplied, the candidate state is projected onto the
     region before evaluation, so the search navigates the feasible path.
@@ -127,6 +133,43 @@ def backtracking_search(
         val, g = value_and_grad_fn(projected, *args)
         return projected, val, g
 
+    # --- Extrapolation phase ---------------------------------------------
+    # Grow the step while Armijo holds *and* fitness strictly improves, so a
+    # still-descending oracle endpoint is extended outward (t -> 2, 4, ...).
+    init_params, init_val, init_g = eval_at(init_step)
+
+    def ext_cond(carry):
+        t, i, val, _g, _p = carry
+        next_t = t * grow
+        # Predict whether the larger step is still admissible: we only keep
+        # growing while the current point already satisfies Armijo (so the
+        # bracket is healthy) and we have extrapolation budget left.
+        armijo = val <= value + c1 * t * dg
+        return jnp.logical_and(armijo, i < max_extrapolate)
+
+    def ext_body(carry):
+        t, i, val, g, p = carry
+        next_t = t * grow
+        np_, nv, ng = eval_at(next_t)
+        # Accept the larger step only if it strictly improves fitness *and*
+        # still satisfies Armijo at the larger step; otherwise stop growing.
+        next_armijo = nv <= value + c1 * next_t * dg
+        improves = jnp.logical_and(nv < val, next_armijo)
+        t = jnp.where(improves, next_t, t)
+        val = jnp.where(improves, nv, val)
+        g = jax.tree_util.tree_map(lambda a, b: jnp.where(improves, a, b), ng, g)
+        p = jax.tree_util.tree_map(lambda a, b: jnp.where(improves, a, b), np_, p)
+        # If we did not improve, exhaust the budget to stop the loop.
+        i = jnp.where(improves, i + 1, jnp.asarray(max_extrapolate))
+        return t, i, val, g, p
+
+    ext_t, _ei, ext_val, ext_g, ext_p = jax.lax.while_loop(
+        ext_cond,
+        ext_body,
+        (init_step, jnp.asarray(0), init_val, init_g, init_params),
+    )
+
+    # --- Backtracking phase ----------------------------------------------
     def cond(carry):
         t, i, val, _g, _p = carry
         armijo = val <= value + c1 * t * dg
@@ -138,11 +181,9 @@ def backtracking_search(
         new_params, new_val, new_g = eval_at(t)
         return t, i + 1, new_val, new_g, new_params
 
-    # Evaluate at the initial step first.
-    init_params, init_val, init_g = eval_at(init_step)
-
+    # Start backtracking from the (possibly extrapolated) point.
     t, _i, final_val, final_g, new_params = jax.lax.while_loop(
-        cond, body, (init_step, jnp.asarray(0), init_val, init_g, init_params)
+        cond, body, (ext_t, jnp.asarray(0), ext_val, ext_g, ext_p)
     )
     armijo = final_val <= value + c1 * t * dg
     return LineSearchResult(
@@ -316,6 +357,8 @@ def armijo_search(
     c1: float = 1e-4,
     shrink: float = 0.5,
     max_iter: int = 30,
+    grow: float = 2.0,
+    max_extrapolate: int = 10,
     grad_dir=None,
     qn_dir=None,
     region=None,
@@ -337,6 +380,8 @@ def armijo_search(
         c1=c1,
         shrink=shrink,
         max_iter=max_iter,
+        grow=grow,
+        max_extrapolate=max_extrapolate,
         grad_dir=grad_dir,
         qn_dir=qn_dir,
         region=region,

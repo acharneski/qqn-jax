@@ -164,11 +164,23 @@ def TrustRegion(
     radius: float = 1.0,
     radius_max: float = 1e3,
     adaptive: bool = True,
+    shrink: float = 0.5,
+    expand: float = 2.0,
+    eta_lo: float = 0.1,
+    eta_hi: float = 0.75,
 ) -> Region:
     """Enforce ``‖x_new − x‖₂ ≤ Δ`` by radially clipping the step.
 
     With ``adaptive=True`` the radius grows/shrinks according to the ratio
-    ``ρ = ared / pred`` of actual to predicted reduction.
+     ``ρ = ared / pred`` of actual to predicted reduction.
+     Esoteric note (from the Andromeda gradient-clusters): on a *curved*
+     path the chord-length the radius constrains and the arc-length the
+     predicted-reduction model integrates are different coordinates. We
+     therefore (a) only shrink on a genuinely poor ``ρ`` (``< eta_lo``),
+     (b) shrink *gently* (``shrink``, default 0.5 not 0.25), and (c) hold
+     the radius in the wide acceptable band ``[eta_lo, eta_hi]`` so the
+     adaptive feedback does not over-react to the chord/arc mismatch that
+     stalls the naive ``ρ < 0.25`` rule.
     """
     eps = 1e-12
 
@@ -190,15 +202,22 @@ def TrustRegion(
         step = _tree_sub(info.new_params, info.params)
         n = tree_l2_norm(step)
         at_boundary = n >= state.radius - 1e-6
+        # Only contract on a genuinely poor agreement, and contract gently.
+        # The wide central band [eta_lo, eta_hi] is the *stable attractor*:
+        # the radius is held constant there, immune to the chord/arc-length
+        # disagreement that drives the naive rule to collapse.
         new_radius = jnp.where(
-            rho < 0.25,
-            0.25 * state.radius,
+            rho < eta_lo,
+            shrink * state.radius,
             jnp.where(
-                jnp.logical_and(rho > 0.75, at_boundary),
-                jnp.minimum(2.0 * state.radius, radius_max),
+                jnp.logical_and(rho > eta_hi, at_boundary),
+                jnp.minimum(expand * state.radius, radius_max),
                 state.radius,
             ),
         )
+        # A radius can never usefully fall below the machine-floor of the
+        # step it is meant to bound; clamp it away from collapse.
+        new_radius = jnp.maximum(new_radius, eps)
         return TrustRegionState(radius=new_radius)
 
     return Region(init=init, project=project, update=update)

@@ -268,7 +268,7 @@ class AndersonState(NamedTuple):
     count: jnp.ndarray
 
 
-def AndersonOracle(window: int = 5, reg: float = 1e-8) -> Oracle:
+def AndersonOracle(window: int = 5, reg: float = 1e-8, beta: float = 1.0) -> Oracle:
     """Anderson-accelerated (Type-II) oracle — the variational ideal that
     L-BFGS approximates.
 
@@ -276,12 +276,17 @@ def AndersonOracle(window: int = 5, reg: float = 1e-8) -> Oracle:
     least-squares problem over recent gradient *differences*::
 
         min_θ ‖ ∇f − ΔG θ ‖²  (+ reg·‖θ‖²)
-        direction = −( ∇f − ΔG θ )  −  ΔX θ
+         direction = −β·( ∇f − ΔG θ )  −  ΔX θ
 
     where ΔG, ΔX are first-differences of the stored gradient/iterate
     windows. With ``window=1`` this reduces to a secant step; with a deep
     window it captures multi-step curvature the single-secant cannot. No
     Hessian is ever formed; the only solve is an ``(m × m)`` system.
+     The *coupling constant* ``β`` (the mixing parameter of the classical
+     Anderson scheme) rescales the accelerated residual toward the
+     gradient's natural magnitude. ``β = 1`` recovers the pure Type-II
+     update; ``β > 1`` lets the deep-residual descent stretch, converting
+     this oracle's leading trajectory-AUC into a leading *iteration* count.
     """
 
     def init(params):
@@ -326,7 +331,7 @@ def AndersonOracle(window: int = 5, reg: float = 1e-8) -> Oracle:
 
         # Accelerated residual and the corresponding iterate correction.
         residual = grad - dG @ theta
-        d = -(residual) - dX @ theta
+        d = -beta * residual - dX @ theta
         # Safeguard: fall back to steepest descent if the solve degenerates.
         ok = jnp.all(jnp.isfinite(d)) & (state.count > 0)
         d = jnp.where(ok, d, -grad)

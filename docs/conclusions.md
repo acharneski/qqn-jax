@@ -28,8 +28,8 @@ target was first reached. The headline results are:
 - **QQN reaches the shared target in fewer iterations than L-BFGS at a
   fraction of the cost.** On the softmax MNIST benchmark, QQN reached the
   shared `f_target = 1.1e-1` in **65 iterations** (final loss `1.096e-01`) —
-  fewer than Optax's L-BFGS (70 iterations) — while running roughly **1.5×
-  faster** in wall-clock time (1.534s vs. 2.268s), a **1.08×** iteration
+  fewer than Optax's L-BFGS (70 iterations) — while running roughly **1.4×
+  faster** in wall-clock time (1.546s vs. 2.117s), a **1.08×** iteration
   speedup.
 - **QQN clearly beats first-order baselines on convergence speed.** It reached
   the target in ~4× fewer iterations than Adam (which needed 263), and SGD
@@ -40,11 +40,12 @@ target was first reached. The headline results are:
   component (gradient, oracle, search, region) could be substituted
   independently, and the defaults (`oracle="lbfgs"`, `region=None`) reproduced
   the baseline behavior exactly.
-- **All strong methods reached the shared `f_target = 1.1e-1`.** The target was
-  deliberately tuned to `1.1e-1` (the previous `1.0e-1` was unreachable by
-  every method within budget) so the iterations-to-target column became
-  informative. Under it, the best-of-breed deep-memory oracles won the race at
-  **43 iterations**.
+- **Deep L-BFGS memory wins the race at a 1.63× iteration speedup over
+  L-BFGS.** The target was deliberately tuned to `1.1e-1` (the previous
+  `1.0e-1` was unreachable by every method within budget) so the
+  iterations-to-target column became informative. Under it, the best-of-breed
+  deep-memory oracles (`QQN-L50`, `QQN-L100`) won the race at **43 iterations**
+  versus L-BFGS's 70 — a **1.63× iteration speedup**.
 
 ## Validation of Core Algorithmic Claims
 
@@ -72,19 +73,28 @@ regardless of oracle quality, leaving the oracle free to be aggressive.
 - **L-BFGS history depth** is the single most important convergence-speed
   lever, with a monotone reduction in iterations-to-target `L5 > L10 > L20 >
   L50` (80 → 65 → 59 → 43), clear diminishing returns past size 50, and a hard
-  plateau at 100 (`L50 == L100` at **43 iterations**). The converged final
-  loss is essentially flat across depths (every variant hits the shared
-  target), so the lever here is *speed of convergence*, not final loss. Very
-  deep histories (L100) buy *no* extra speed for their additional cost on this
-  problem.
+  plateau at 100 (`L50 == L100` at **43 iterations**, a **1.63× iteration
+  speedup over L-BFGS**). The converged final loss is essentially flat across
+  depths (every variant hits the shared target), so the lever here is *speed
+  of convergence*, not final loss. Very deep histories (L100) buy *no* extra
+  speed for their additional cost on this problem.
+- **The Anderson-acceleration oracle is the AUC champion.** `QQN-And`
+  (`AndersonOracle(window=5)`) solves a tiny `(m × m)` constrained
+  least-squares problem over recent gradient *differences* — the variational
+  ideal that L-BFGS only approximates — forming the `t = 1` endpoint with no
+  Hessian ever built. It reaches the shared target in **269 iterations** (far
+  more than any L-BFGS depth) but posts the **best trajectory AUC of any
+  method in the study (`-0.84`)**, edging out even Adam (`-0.82`). Its deep,
+  optimal residual combination keeps the whole trajectory at very low loss
+  even though many cheap steps are needed to cross the tight final target.
 - **The matrix-free secant (Barzilai-Borwein) oracle is a strong,
   zero-storage curvature signal.** `QQN-Sec` reaches the shared target (in 311
   iterations — far more than any L-BFGS depth, but far fewer than momentum,
-  which never converges) while posting the **best trajectory AUC of any QQN
-  variant** (`-0.74`, second only to Adam overall). Despite carrying no
-  Hessian and no history buffers, the single-step secant `α = ⟨s,s⟩/⟨s,y⟩`
-  descends fast and deep on average, making it an excellent zero-storage
-  fallback that strictly dominates a momentum fallback.
+  which never converges) while posting an excellent trajectory AUC (`-0.74`,
+  among the best of the QQN variants). Despite carrying no Hessian and no
+  history buffers, the single-step secant `α = ⟨s,s⟩/⟨s,y⟩` descends fast and
+  deep on average, making it an excellent zero-storage fallback that strictly
+  dominates a momentum fallback.
 - **Momentum** behaved as a first-order accelerator and **never reached the
   target** within 500 iterations; notably, lighter damping (`beta = 0.01`) —
   which collapses toward steepest descent — converged to a lower loss than
@@ -92,7 +102,7 @@ regardless of oracle quality, leaving the oracle free to be aggressive.
 - **Shampoo** did not scale to this high-dimensional softmax problem: even with
   a *blocked* preconditioner (`block_size=64`, `update_freq=25`), its dense
   inverse-root refresh exhausted the 15-second wall-clock budget after only
-  9 iterations (~1793 ms/it), landing at a much higher loss than even the
+  9 iterations (~1815 ms/it), landing at a much higher loss than even the
   momentum oracle.
 
 ### Line Search Trades Time, Not Convergence Speed — Except Strong-Wolfe
@@ -100,8 +110,8 @@ regardless of oracle quality, leaving the oracle free to be aggressive.
 Within the **backtracking/Armijo** family, the line search choice had
 negligible effect on the iterations-to-target (or converged loss) but a large
 effect on wall-time. Backtracking was the clear efficiency winner (`QQN-BT`,
-1.277s, target at iteration 65); plain Armijo (`QQN`, 1.534s) and the spline
-refinement (2.590s, target at 62) matched its iterations-to-target at higher
+1.294s, target at iteration 65); plain Armijo (`QQN`, 1.546s) and the spline
+refinement (2.638s, target at 64) matched its iterations-to-target at higher
 cost. This confirms that the more expensive searches do **not** degrade quality
 on a well-conditioned objective where curvature information is easy to exploit.
 
@@ -111,23 +121,31 @@ Its tight curvature condition over-restricts the step along the quadratic path
 here, so the strong-Wolfe search is not a safe default for this class of
 objective.
 
-### The Spline Refinement Composes, As Designed — and Stabilizes the Region
+### The Spline Refinement Composes, As Designed — but No Longer Rescues the Adaptive Region
 
 Consistent with [`spline_search.md`](spline_search.md), the spline behaves as
-an orthogonal enhancement that *wraps* (rather than replaces) the inner search.
-It did not materially change the iterations-to-target for shallow-memory
-variants on the smooth objective, but it **sharpened the deep-memory
-trajectory**: `QQN-L50Spln` reached the target in **44 iterations** (essentially
-tied with the spline-less L50 baseline at 43) while achieving the **lowest loss
-observed across the whole study (`1.092e-01`)**.
+an orthogonal enhancement that *wraps* (rather than replaces) the inner search,
+reusing every probe as a cubic Hermite control point and performing an
+adaptive superlinear extension probe when the downstream tangent still
+descends. It did not materially change the iterations-to-target for
+shallow-memory variants on the smooth objective, but it **sharpened the
+deep-memory trajectory**: `QQN-L50Spln` reached the target in **43 iterations**
+(tying the spline-less L50 baseline) while achieving the **lowest loss among
+the converging spline variants (`1.091e-01`)** and crossing the tight `1.2e-1`
+milestone fastest of all (iteration 37).
 
-Crucially, the spline-wrapped variants are **immune to the adaptive
-trust-region stall** (see below) that afflicts the bare `QQN-TR` family:
-`QQN-SplnTR` (66) and `QQN-L50SplnTR` (45) both converge cleanly, because the
-spline's region-projected probes and strict-improvement gating keep the search
-monotone even when the radius adapts. The extra per-probe spline fitting costs
-roughly **2×** wall-time, which does not pay off for shallow-memory variants on
-this smooth objective.
+> **Reversal from earlier runs:** under the current honest predicted-reduction
+> model (`pred ≈ -⟨∇f, d(t)⟩` with a curvature correction and a first-order
+> floor), the spline's strict-improvement gating is **no longer sufficient to
+> rescue the adaptive trust-region**. The spline-wrapped adaptive-TR stacks
+> `QQN-SplnTR` (plateau at `2.039e-01`) and `QQN-L50SplnTR` (plateau at
+> `1.653e-01`) now **stall**, exhausting all 500 iterations. The monotone
+> gating keeps their trajectories low (yielding deceptively good AUCs around
+> `-0.76`) but cannot overcome the over-shrinking adaptive radius. **Prefer a
+> fixed radius (or no region) when combining the spline with a trust-region.**
+
+The extra per-probe spline fitting costs roughly **2×** wall-time, which does
+not pay off for shallow-memory variants on this smooth objective.
 
 ### Regions Are Low-Overhead Safeguards — but the Adaptive Trust-Region Is Fragile
 
@@ -144,18 +162,20 @@ this smooth objective.
   iterations), confirming radial step-clipping itself is sound.
 - The **adaptive** trust-region, however, **stalls and never reaches the
   target** across every radius (`TR025` ends at `1.983e+00`, `TR` at
-  `7.772e-01`, `TR2` at `6.256e-01`). Switching the radius from fixed to
+  `6.272e-01`, `TR2` at `6.256e-01`). Switching the radius from fixed to
   adaptive moves the result from *converged at 68 iterations* to *never
   reaches the target*. The honest predicted-reduction model drives the adaptive
   radius to over-shrink and stall the search.
 - This fragility propagates through any stack that relies on a bare adaptive
-  trust-region: `Sequential([Box, TrustRegion])`, `QQN-L50TR`, `QQN-L50BTTR`,
-  and the warm-started variants all inherit the same stall.
+  trust-region: `Sequential([Box, TrustRegion])`, `QQN-L50TR`, `QQN-L100TR`,
+  `QQN-L50BTTR`, `QQN-L50Sec`, and the warm-started variants all inherit the
+  same stall, converging to the *same* `6.272e-01` plateau — confirming the
+  cause is the region, not the oracle or search.
 
 **Recommendation:** on this class of well-conditioned smooth problem, prefer no
-region (or a fixed radius / box / orthant) over an adaptive trust-region —
-unless the spline's monotone gating is also enabled to neutralize the
-instability.
+region (or a fixed radius / box / orthant) over an adaptive trust-region. The
+spline's monotone gating no longer neutralizes the instability under the
+current honest `pred` model.
 
 ### The t-Grid Is a Cheap Tuning Knob
 
@@ -167,35 +187,47 @@ confirming the t-grid is a tuning knob here rather than a convergence driver.
 
 ### Combinators Work Correctly
 
-`Fallback([L-BFGS, Momentum])` reproduced the L-BFGS baseline exactly (target
-at iteration 65), because the L-BFGS direction was always valid and the
-momentum fallback never triggered — the intended behavior. Stacked
-oracle/region combinators ran correctly: the deeper L20 oracle let `QQN-L20Box`
-reach the target in 60 iterations, ahead of the shallow box variant (65).
-However, combinators that nest a bare adaptive trust-region (e.g.
-`QQN-Seq`, `QQN-L50Sec` = `Fallback([L-BFGS(50), Secant]) + TR`) **inherit the
-adaptive-trust-region stall** (`7.772e-01`, never reaching target): the
-composition is correct, but the nested adaptive region carries the
-destabilizing behavior documented above.
+The `Fallback` validity test is now **descent-based**, not merely non-zero: a
+finite, non-zero quasi-Newton direction that points *uphill* (`⟨∇f, d⟩ ≥ 0`) is
+rejected and the fallback triggers — the gate is misalignment, not just
+collapse.
+
+`Fallback([L-BFGS, Momentum])` reproduced the L-BFGS baseline exactly (`QQN-Fall`,
+target at iteration 65), and `Fallback([L-BFGS(50), Anderson])` reproduced the
+deep-L50 baseline exactly (`QQN-L50And`, target at 43), because the L-BFGS
+direction was always a valid descent direction and the secondary oracle never
+triggered — the intended behavior. Stacked oracle/region combinators ran
+correctly: the deeper L20 oracle let `QQN-L20Box` reach the target in 60
+iterations, ahead of the shallow box variant (65). However, combinators that
+nest a bare adaptive trust-region (e.g. `QQN-Seq`, and `QQN-L50Sec` =
+`Fallback([L-BFGS(50), Secant]) + TR`) **inherit the adaptive-trust-region
+stall** (`6.272e-01`, never reaching target): the composition is correct, but
+the nested adaptive region carries the destabilizing behavior documented above.
 
 ## Best-of-Breed Recommendation
 
-The strongest **converging** stacks here are the **bare deep-memory oracles**
-and the **deep-memory + spline** combinations — *not* the deep-memory +
-adaptive-trust-region stacks (which stall). The fewest iterations to target
-(**43**) are reached by the bare deep-memory oracles `QQN-L50` and `QQN-L100`
-at the lowest wall-time (~1.04–1.12s), a strong Pareto point on iterations vs.
-time. The **lowest loss** (`1.092e-01`) is reached by the deep-memory + spline
-combos `QQN-L50Spln` / `QQN-L100Spln` at 44 iterations.
+The strongest **converging** stacks here are the **bare deep-memory oracles**,
+the **deep-memory + spline** combinations, and the **deep-memory + warm-started
+backtracking + fixed-radius trust-region** combinations — *not* the deep-memory
++ adaptive-trust-region stacks (which stall). The fewest iterations to target
+(**43**) are reached by the bare deep-memory oracles `QQN-L50` and `QQN-L100`,
+the Anderson-fallback `QQN-L50And`, and the deep-memory + spline combos
+`QQN-L50Spln` / `QQN-L100Spln`, at the lowest wall-time (~1.04–1.17s for the
+region-free variants), a strong Pareto point on iterations vs. time
+(**1.63× iteration speedup over L-BFGS**). The **lowest loss observed across
+the whole study (`1.090e-01`)** is reached by `QQN-Fast` (L100 + warm-started
+backtracking + a *fixed* trust-region) at 57 iterations, which also sits on the
+Pareto frontier.
 
 For smooth, deterministic, full-batch problems, the robust default is therefore
-**deep L-BFGS memory (L50/L100) + backtracking**, optionally adding the
-**spline refinement** when the lowest possible loss is worth ~2× wall-time and
-when a trust-region's monotone gating is desired. **Avoid the bare adaptive
+**deep L-BFGS memory (L50/L100) + (warm-started) backtracking + a fixed
+trust-region (or no region)**, optionally adding the **spline refinement** when
+the lowest possible loss is worth ~2× wall-time. **Avoid the bare adaptive
 trust-region** on this class of problem: stacks that rely on it (`QQN-L50TR`,
-`QQN-L50BTTR`, the warm-started `QQN-Fast`/`QQN-Champion` variants) all stall at
-`7.772e-01` or worse, because probing beyond `α = 1` interacts badly with the
-radial trust-region clip and the over-shrinking adaptive radius.
+`QQN-L100TR`, `QQN-L50BTTR`, `QQN-L50Sec`, the spline-wrapped `QQN-SplnTR` /
+`QQN-L50SplnTR`) all stall at `6.272e-01` (or `≤2e-1`) and never reach the
+target, because the over-shrinking adaptive radius interacts badly with the
+radial trust-region clip.
 
 ## Limitations and Caveats
 
@@ -212,6 +244,12 @@ following caveats:
   `ρ = ared/pred` may be exactly the safeguard that prevents divergence; its
   stall here reflects the honest predicted-reduction model interacting with a
   well-conditioned objective, not a universal defect.
+- **Iteration-count vs. AUC can disagree.** The Hessian-free Anderson and
+  secant oracles take *many more iterations* to cross the tight final target
+  than deep L-BFGS, yet lead the trajectory-AUC leaderboard — read AUC
+  alongside iterations-to-target. The stalled spline+adaptive-TR stacks also
+  post deceptively good AUCs precisely because their monotone gating keeps the
+  trajectory low even though they never converge.
 - **Generalization was not the differentiator.** Test accuracy was similar
   across the strong optimizers; these results concern optimization speed and
   final training loss, not generalization (Adam in fact had the highest test
@@ -227,10 +265,13 @@ The empirical evidence supports QQN's central design claims: it is a competitive
 quasi-Newton optimizer whose modular four-axis architecture (gradient, oracle,
 search, region) behaves as specified, with the steepest-descent path anchor
 delivering robust convergence and the L-BFGS oracle delivering the bulk of the
-convergence speed. The oracle axis is the dominant lever; the line search and
-region axes are best understood as tunable trade-offs — efficiency and
-safety/acceleration levers, respectively. Two cautionary findings temper the
-earlier optimism: **strong-Wolfe and the bare adaptive trust-region both fail to
-converge** on this well-conditioned smooth problem, while the **matrix-free
-secant oracle and the monotone-gated spline refinement** emerge as standout
-robust additions to the toolkit.
+convergence speed (a **1.63× iteration speedup over L-BFGS** at deep memory).
+The oracle axis is the dominant lever; the line search and region axes are best
+understood as tunable trade-offs — efficiency and safety/acceleration levers,
+respectively. Two cautionary findings temper the earlier optimism:
+**strong-Wolfe and the bare adaptive trust-region both fail to converge** on
+this well-conditioned smooth problem — and, under the current honest `pred`
+model, the spline's monotone gating no longer rescues the adaptive region.
+Meanwhile, the **Hessian-free Anderson and matrix-free secant oracles** emerge
+as standout robust additions to the toolkit, leading the trajectory-AUC axis
+despite their `O(n)`–`O(m²n)` memory and complete absence of a stored Hessian.
