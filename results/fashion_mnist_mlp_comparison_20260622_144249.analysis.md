@@ -3,6 +3,8 @@
 **Run:** `fashion_mnist_mlp_comparison_20260622_144249.log`
 **Date:** 2026-06-22
 
+![fashion_mnist_mlp_comparison_vs_time_20260622-145248.png](fashion_mnist_mlp_comparison_vs_time_20260622-145248.png)
+
 ## 1. Experiment Configuration
 
 | Setting             | Value                                                 |
