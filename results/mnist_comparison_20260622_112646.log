@@ -1,0 +1,316 @@
+=== MNIST optimizer comparison: QQN vs SGD vs Adam vs L-BFGS ===
+    (QQN variants: line search / oracle / region)
+    Robustness note: the adaptive trust-region over-shrinks under
+    the honest pred model; fixed-radius / spline stacks are the
+    robust fast path (see the iteration-efficiency leaderboard).
+  classes=10  n_train=5000  n_test=1000  maxiter=500
+
+  shared stop: f_target=1.1e-01  gtol=1.0e-04  time_budget=15.0s
+
+optimizer     final_loss   iters   train_acc   test_acc  sparsity   time(s)   ms/it  ->target   t->tgt  vs LBFGS     AUC
+------------------------------------------------------------------------------------------------------------------------
+QQN-And     1.059797e-01     176      0.9924     0.8750    0.0000     2.654   15.08       176    2.645     0.40x   -0.80
+QQN-Fast    1.090450e-01      57      0.9908     0.8770    0.0000     1.459   25.59        57    1.450     1.23x   -0.57
+QQN-L50And  1.090973e-01      45      0.9904     0.8720    0.0000     1.345   29.90        45    1.337     1.56x   -0.65
+QQN-L50     1.090973e-01      45      0.9904     0.8720    0.0000     1.258   27.96        45    1.249     1.56x   -0.65
+QQN-L100    1.090973e-01      45      0.9904     0.8720    0.0000     1.310   29.10        45    1.300     1.56x   -0.65
+QQN-L20Box  1.093810e-01      56      0.9908     0.8720    0.0000     1.379   24.62        56    1.370     1.25x   -0.70
+QQN-AndWS   1.095208e-01      55      0.9910     0.8700    0.0000     1.482   26.95        55    1.473     1.27x   -0.58
+QQN-L50Spln  1.095592e-01      42      0.9910     0.8750    0.0000     3.156   75.14        42    3.147     1.67x   -0.64
+QQN-L100Spln  1.095592e-01      42      0.9910     0.8750    0.0000     2.723   64.83        42    2.713     1.67x   -0.64
+QQN-Apex    1.095714e-01      40      0.9904     0.8750    0.0000     2.840   71.00        40    2.831     1.75x   -0.62
+QQN-L50SplnTR  1.095763e-01      39      0.9910     0.8750    0.0000     2.753   70.59        39    2.738     1.79x   -0.60
+QQN-Best    1.095763e-01      39      0.9910     0.8750    0.0000     2.825   72.43        39    2.816     1.79x   -0.60
+QQN-L20     1.096926e-01      56      0.9902     0.8730    0.0000     1.355   24.19        56    1.346     1.25x   -0.70
+QQN-L50TR2  1.096942e-01      47      0.9902     0.8720    0.0000     1.369   29.14        47    1.360     1.49x   -0.64
+QQN-Champion  1.096971e-01      59      0.9908     0.8730    0.0000     1.461   24.76        59    1.452     1.19x   -0.53
+QQN-And2    1.097185e-01     113      0.9894     0.8800    0.0000     1.972   17.45       113    1.963     0.62x   -0.75
+QQN-TR      1.097189e-01      66      0.9902     0.8780    0.0000     1.545   23.41        66    1.535     1.06x   -0.70
+QQN-TRfix   1.097296e-01      66      0.9902     0.8780    0.0000     1.475   22.35        66    1.466     1.06x   -0.70
+QQN-L50Endpt  1.097329e-01      57      0.9904     0.8760    0.0000     1.423   24.97        57    1.414     1.23x   -0.57
+QQN-L50WS+  1.097329e-01      57      0.9904     0.8760    0.0000     1.431   25.10        57    1.422     1.23x   -0.57
+L-BFGS      1.097736e-01      70      0.9910     0.8750    0.0000     2.076   29.65        70    2.076     1.00x   -0.71
+QQN-Orth    1.097762e-01      67      0.9908     0.8750    0.0037     1.476   22.03        67    1.467     1.04x   -0.72
+QQN-L20HZ   1.098134e-01      61      0.9908     0.8750    0.0000     1.416   23.22        61    1.407     1.15x   -0.69
+QQN-TR025   1.098188e-01     132      0.9896     0.8790    0.0000     2.171   16.45       132    2.162     0.53x   -0.66
+QQN-Box     1.098275e-01      64      0.9896     0.8730    0.0000     1.422   22.21        64    1.413     1.09x   -0.71
+QQN-SplnWS  1.098350e-01      42      0.9900     0.8780    0.0000     2.843   67.69        42    2.835     1.67x   -0.62
+QQN-TR2     1.098787e-01      65      0.9902     0.8760    0.0000     1.495   23.00        65    1.486     1.08x   -0.71
+QQN-Sec     1.098956e-01     194      0.9882     0.8800    0.0000     2.690   13.87       194    2.681     0.36x   -0.71
+QQN-L50Sec  1.098991e-01      45      0.9914     0.8720    0.0000     1.315   29.23        45    1.307     1.56x   -0.62
+QQN-L50TR   1.098991e-01      45      0.9914     0.8720    0.0000     1.331   29.59        45    1.323     1.56x   -0.62
+QQN-L50TRcc  1.098991e-01      45      0.9914     0.8720    0.0000     1.302   28.94        45    1.293     1.56x   -0.62
+QQN-L100TR  1.098991e-01      45      0.9914     0.8720    0.0000     1.380   30.67        45    1.371     1.56x   -0.62
+QQN-L50BTTR  1.098991e-01      45      0.9914     0.8720    0.0000     1.297   28.83        45    1.288     1.56x   -0.62
+QQN-L50TRfix  1.098992e-01      45      0.9914     0.8720    0.0000     1.288   28.62        45    1.279     1.56x   -0.62
+QQN-Spln    1.099098e-01      63      0.9906     0.8760    0.0000     3.101   49.22        63    3.092     1.11x   -0.71
+QQN-BTSpln  1.099098e-01      63      0.9906     0.8760    0.0000     2.898   46.00        63    2.889     1.11x   -0.71
+QQN-SplnTR  1.099162e-01      64      0.9902     0.8740    0.0000     3.679   57.49        64    3.671     1.09x   -0.70
+QQN-Seq     1.099394e-01      70      0.9904     0.8730    0.0000     1.757   25.09        70    1.747     1.00x   -0.71
+QQN-L50WS   1.099653e-01      79      0.9894     0.8820    0.0000     1.690   21.39        79    1.681     0.89x   -0.67
+QQN         1.099695e-01      62      0.9902     0.8730    0.0001     1.710   27.57        62    1.700     1.13x   -0.71
+QQN-BT      1.099695e-01      62      0.9902     0.8730    0.0001     1.371   22.11        62    1.362     1.13x   -0.71
+QQN-Fall    1.099695e-01      62      0.9902     0.8730    0.0001     1.403   22.63        62    1.394     1.13x   -0.71
+Adam        1.099943e-01     263      0.9898     0.8810    0.1824     0.526    2.00       263    0.526     0.27x   -0.82
+QQN-L5      1.099973e-01      72      0.9910     0.8730    0.0001     1.500   20.84        72    1.491     0.97x   -0.72
+QQN-Mom01   1.370725e-01     500      0.9752     0.8870    0.0000     5.815   11.63         —        —         —   -0.70
+QQN-Mom10   1.581884e-01     500      0.9652     0.8920    0.0000     5.812   11.62         —        —         —   -0.65
+QQN-Mom50   2.265233e-01     500      0.9422     0.8900    0.0000     5.712   11.42         —        —         —   -0.53
+SGD         2.266410e-01     500      0.9422     0.8900    0.0000     0.560    1.12         —        —         —   -0.53
+QQN-Mom     3.418711e-01     500      0.9150     0.8740    0.0001     5.648   11.30         —        —         —   -0.33
+QQN-SW      3.713926e-01     500      0.8980     0.8610    0.0000     7.625   15.25         —        —         —   -0.42
+QQN-SW+TR   5.448411e-01     500      0.8654     0.8300    0.0000     7.642   15.28         —        —         —   -0.26
+QQN-Sh      6.789198e-01       9      0.8118     0.7590    0.0000    16.576 1841.76         —        —         —   -0.04
+
+Pareto frontier (loss vs. time — non-dominated variants):
+  Adam         loss=1.0999e-01  time=0.526s
+  QQN-L50      loss=1.0910e-01  time=1.258s
+  QQN-Fast     loss=1.0904e-01  time=1.459s
+  QQN-And      loss=1.0598e-01  time=2.654s
+
+Composite efficiency score (lower = better; converging only):
+  QQN-L50        score=1.413  iters= 45  time=1.249s  final=1.0910e-01
+  QQN-L50TRfix   score=1.428  iters= 45  time=1.279s  final=1.0990e-01
+  QQN-L50BTTR    score=1.431  iters= 45  time=1.288s  final=1.0990e-01
+  QQN-L100       score=1.432  iters= 45  time=1.300s  final=1.0910e-01
+  QQN-L50TRcc    score=1.433  iters= 45  time=1.293s  final=1.0990e-01
+  QQN-L50Sec     score=1.438  iters= 45  time=1.307s  final=1.0990e-01
+  QQN-L50TR      score=1.444  iters= 45  time=1.323s  final=1.0990e-01
+  QQN-L50And     score=1.445  iters= 45  time=1.337s  final=1.0910e-01
+  QQN-L100TR     score=1.461  iters= 45  time=1.371s  final=1.0990e-01
+  QQN-L50TR2     score=1.478  iters= 47  time=1.360s  final=1.0969e-01
+  QQN-L20        score=1.561  iters= 56  time=1.346s  final=1.0969e-01
+  QQN-L20Box     score=1.569  iters= 56  time=1.370s  final=1.0938e-01
+
+Iteration-efficiency leaderboard (target reached, fewest iters):
+  QQN-L50SplnTR  iters=  39  time=2.738s  vs_LBFGS= 1.79x  final=1.0958e-01
+  QQN-Best       iters=  39  time=2.816s  vs_LBFGS= 1.79x  final=1.0958e-01
+  QQN-Apex       iters=  40  time=2.831s  vs_LBFGS= 1.75x  final=1.0957e-01
+  QQN-L100Spln   iters=  42  time=2.713s  vs_LBFGS= 1.67x  final=1.0956e-01
+  QQN-SplnWS     iters=  42  time=2.835s  vs_LBFGS= 1.67x  final=1.0983e-01
+  QQN-L50Spln    iters=  42  time=3.147s  vs_LBFGS= 1.67x  final=1.0956e-01
+  QQN-L50        iters=  45  time=1.249s  vs_LBFGS= 1.56x  final=1.0910e-01
+  QQN-L50TRfix   iters=  45  time=1.279s  vs_LBFGS= 1.56x  final=1.0990e-01
+  QQN-L50BTTR    iters=  45  time=1.288s  vs_LBFGS= 1.56x  final=1.0990e-01
+  QQN-L50TRcc    iters=  45  time=1.293s  vs_LBFGS= 1.56x  final=1.0990e-01
+  QQN-L100       iters=  45  time=1.300s  vs_LBFGS= 1.56x  final=1.0910e-01
+  QQN-L50Sec     iters=  45  time=1.307s  vs_LBFGS= 1.56x  final=1.0990e-01
+
+Trajectory-AUC leaderboard (lower = faster overall descent):
+  Adam           AUC=-0.821  final=1.0999e-01  time=0.526s
+  QQN-And        AUC=-0.801  final=1.0598e-01  time=2.654s
+  QQN-And2       AUC=-0.751  final=1.0972e-01  time=1.972s
+  QQN-L5         AUC=-0.721  final=1.1000e-01  time=1.500s
+  QQN-Orth       AUC=-0.718  final=1.0978e-01  time=1.476s
+  QQN-Box        AUC=-0.715  final=1.0983e-01  time=1.422s
+  QQN-Sec        AUC=-0.709  final=1.0990e-01  time=2.690s
+  QQN-Spln       AUC=-0.709  final=1.0991e-01  time=3.101s
+  QQN-BTSpln     AUC=-0.709  final=1.0991e-01  time=2.898s
+  QQN            AUC=-0.708  final=1.0997e-01  time=1.710s
+  QQN-BT         AUC=-0.708  final=1.0997e-01  time=1.371s
+  QQN-Fall       AUC=-0.708  final=1.0997e-01  time=1.403s
+
+Convergence-rate profile (iteration first reaching each loss):
+  optimizer      <=5.0e-01   <=2.0e-01   <=1.5e-01   <=1.2e-01
+  QQN-L50SplnTR           6          21          27          33
+  QQN-Best               6          21          27          33
+  QQN-Apex               7          21          27          34
+  QQN-L50Spln            7          20          27          36
+  QQN-L100Spln           7          20          27          36
+  QQN-SplnWS             6          22          29          37
+  QQN-L50And             7          21          29          38
+  QQN-L50                7          21          29          38
+  QQN-L100               7          21          29          38
+  QQN-L50Sec             7          22          31          40
+  QQN-L50TR              7          22          31          40
+  QQN-L50TRcc            7          22          31          40
+  QQN-L100TR             7          22          31          40
+  QQN-L50TR2             7          23          31          40
+  QQN-L50BTTR            7          22          31          40
+  QQN-L50TRfix           7          22          31          40
+  QQN-L20                7          21          31          44
+  QQN-L20Box             7          21          31          44
+  QQN-L20HZ              7          23          33          48
+  QQN                    7          22          33          49
+  QQN-BT                 7          22          33          49
+  QQN-Spln               7          23          34          49
+  QQN-BTSpln             7          23          34          49
+  QQN-Fall               7          22          33          49
+  QQN-Box                7          22          33          49
+  QQN-AndWS              7          33          40          49
+  QQN-SplnTR             6          24          35          51
+  QQN-TR2                7          24          36          51
+  QQN-Orth               7          23          35          51
+  QQN-L50Endpt          12          34          42          51
+  QQN-L50WS+            12          34          42          51
+  QQN-Fast              12          34          42          51
+  QQN-Champion          13          39          45          52
+  QQN-TR                 7          25          37          53
+  QQN-TRfix              7          25          37          53
+  QQN-Seq                7          26          37          54
+  L-BFGS                 7          25          37          54
+  QQN-L5                 7          25          37          55
+  QQN-L50WS             11          35          48          65
+  QQN-And2               7          33          48          96
+  QQN-And                8          37          74         111
+  QQN-TR025             17          58          83         112
+  QQN-Sec               10          92         128         144
+  Adam                   8          42          77         167
+  QQN-SW                 7           —           —           —
+  QQN-Mom              144           —           —           —
+  QQN-Mom50             29           —           —           —
+  QQN-Mom10             15         250           —           —
+  QQN-Mom01             17         186         351           —
+  QQN-Sh                 —           —           —           —
+  QQN-SW+TR              —           —           —           —
+  SGD                   30           —           —           —
+
+Stall report (never reached the shared target):
+  QQN-Mom01      final=1.3707e-01  iters=500  time=5.815s  [slow (no target in maxiter)]
+  QQN-Mom10      final=1.5819e-01  iters=500  time=5.812s  [slow (no target in maxiter)]
+  QQN-Mom50      final=2.2652e-01  iters=500  time=5.712s  [slow (no target in maxiter)]
+  SGD            final=2.2664e-01  iters=500  time=0.560s  [slow (no target in maxiter)]
+  QQN-Mom        final=3.4187e-01  iters=500  time=5.648s  [slow (no target in maxiter)]
+  QQN-SW         final=3.7139e-01  iters=500  time=7.625s  [slow (no target in maxiter)]
+  QQN-SW+TR      final=5.4484e-01  iters=500  time=7.642s  [stalled (plateau)]
+  QQN-Sh         final=6.7892e-01  iters=  9  time=16.576s  [time-budget exhausted]
+
+Loss trajectory (log10, sampled):
+  QQN        0.36  -0.27  -0.57  -0.68  -0.76  -0.83  -0.89  -0.92  -0.94  -0.96
+  QQN-SW     0.36  -0.43  -0.43  -0.43  -0.43  -0.43  -0.43  -0.43  -0.43  -0.43
+  QQN-BT     0.36  -0.27  -0.57  -0.68  -0.76  -0.83  -0.89  -0.92  -0.94  -0.96
+  QQN-Spln   0.36  -0.36  -0.57  -0.68  -0.76  -0.84  -0.89  -0.92  -0.94  -0.96
+  QQN-L50Spln   0.36  -0.12  -0.45  -0.57  -0.66  -0.76  -0.84  -0.89  -0.94  -0.96
+  QQN-SplnTR   0.36  -0.35  -0.53  -0.67  -0.76  -0.83  -0.88  -0.92  -0.94  -0.96
+  QQN-L50SplnTR   0.36  -0.12  -0.38  -0.52  -0.62  -0.72  -0.81  -0.88  -0.93  -0.96
+  QQN-L100Spln   0.36  -0.12  -0.45  -0.57  -0.66  -0.76  -0.84  -0.89  -0.94  -0.96
+  QQN-BTSpln   0.36  -0.36  -0.57  -0.68  -0.76  -0.84  -0.89  -0.92  -0.94  -0.96
+  QQN-Mom    0.36  -0.14  -0.26  -0.32  -0.36  -0.39  -0.42  -0.44  -0.45  -0.47
+  QQN-Sec    0.36  -0.50  -0.55  -0.65  -0.67  -0.78  -0.83  -0.93  -0.94  -0.96
+  QQN-And    0.36  -0.59  -0.77  -0.79  -0.84  -0.87  -0.93  -0.95  -0.95  -0.97
+  QQN-L50And   0.36  -0.16  -0.46  -0.59  -0.68  -0.77  -0.85  -0.90  -0.93  -0.96
+  QQN-L50Sec   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-Mom50   0.36  -0.39  -0.48  -0.52  -0.56  -0.58  -0.60  -0.62  -0.63  -0.64
+  QQN-Mom10   0.36  -0.48  -0.58  -0.64  -0.68  -0.71  -0.74  -0.76  -0.78  -0.80
+  QQN-Mom01   0.36  -0.48  -0.58  -0.67  -0.74  -0.79  -0.81  -0.84  -0.85  -0.86
+  QQN-Sh     0.36   0.10  -0.00  -0.04  -0.06  -0.09  -0.12  -0.13  -0.15  -0.17
+  QQN-L5     0.36  -0.41  -0.59  -0.70  -0.77  -0.85  -0.89  -0.92  -0.94  -0.96
+  QQN-L20    0.36  -0.27  -0.54  -0.66  -0.76  -0.83  -0.88  -0.91  -0.94  -0.96
+  QQN-L50    0.36  -0.16  -0.46  -0.59  -0.68  -0.77  -0.85  -0.90  -0.93  -0.96
+  QQN-L100   0.36  -0.16  -0.46  -0.59  -0.68  -0.77  -0.85  -0.90  -0.93  -0.96
+  QQN-Fall   0.36  -0.27  -0.57  -0.68  -0.76  -0.83  -0.89  -0.92  -0.94  -0.96
+  QQN-Box    0.36  -0.39  -0.58  -0.70  -0.77  -0.84  -0.89  -0.92  -0.94  -0.96
+  QQN-TR     0.36  -0.34  -0.54  -0.67  -0.75  -0.82  -0.88  -0.91  -0.94  -0.96
+  QQN-TR025   0.36  -0.24  -0.51  -0.62  -0.70  -0.78  -0.84  -0.89  -0.93  -0.96
+  QQN-TR2    0.36  -0.38  -0.54  -0.67  -0.76  -0.84  -0.88  -0.92  -0.94  -0.96
+  QQN-TRfix   0.36  -0.34  -0.54  -0.67  -0.75  -0.82  -0.88  -0.91  -0.94  -0.96
+  QQN-Orth   0.36  -0.38  -0.57  -0.69  -0.77  -0.84  -0.89  -0.93  -0.94  -0.96
+  QQN-Seq    0.36  -0.34  -0.55  -0.67  -0.78  -0.84  -0.89  -0.92  -0.94  -0.96
+  QQN-SW+TR   0.36  -0.26  -0.26  -0.26  -0.26  -0.26  -0.26  -0.26  -0.26  -0.26
+  QQN-L20HZ   0.36  -0.28  -0.51  -0.65  -0.76  -0.83  -0.88  -0.92  -0.94  -0.96
+  QQN-L50TR   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-L50TRcc   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-And2   0.36  -0.44  -0.62  -0.73  -0.82  -0.85  -0.89  -0.92  -0.92  -0.96
+  QQN-L100TR   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-L50TR2   0.36  -0.16  -0.44  -0.57  -0.66  -0.76  -0.83  -0.89  -0.93  -0.96
+  QQN-L50BTTR   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-L50WS   0.36  -0.23  -0.50  -0.62  -0.71  -0.81  -0.85  -0.92  -0.94  -0.96
+  QQN-L50Endpt   0.36  -0.16  -0.32  -0.46  -0.54  -0.66  -0.78  -0.86  -0.91  -0.96
+  QQN-L50WS+   0.36  -0.16  -0.32  -0.46  -0.54  -0.66  -0.78  -0.86  -0.91  -0.96
+  QQN-AndWS   0.36  -0.24  -0.38  -0.47  -0.55  -0.66  -0.76  -0.87  -0.91  -0.96
+  QQN-SplnWS   0.36  -0.14  -0.42  -0.56  -0.63  -0.73  -0.81  -0.87  -0.92  -0.96
+  QQN-L50TRfix   0.36  -0.21  -0.42  -0.56  -0.67  -0.74  -0.82  -0.88  -0.92  -0.96
+  QQN-Fast   0.36  -0.16  -0.32  -0.46  -0.54  -0.66  -0.78  -0.86  -0.91  -0.96
+  QQN-Best   0.36  -0.12  -0.38  -0.52  -0.62  -0.72  -0.81  -0.88  -0.93  -0.96
+  QQN-Champion   0.36  -0.00  -0.31  -0.44  -0.49  -0.57  -0.71  -0.83  -0.93  -0.96
+  QQN-Apex   0.36  -0.11  -0.41  -0.55  -0.63  -0.74  -0.81  -0.89  -0.93  -0.96
+  QQN-L20Box   0.36  -0.27  -0.54  -0.66  -0.76  -0.83  -0.88  -0.92  -0.94  -0.96
+  SGD        0.36  -0.39  -0.48  -0.52  -0.56  -0.58  -0.60  -0.62  -0.63  -0.64
+  Adam       0.36  -0.59  -0.78  -0.84  -0.88  -0.91  -0.93  -0.94  -0.95  -0.96
+  L-BFGS     0.36  -0.35  -0.56  -0.67  -0.77  -0.83  -0.89  -0.92  -0.94  -0.96
+
+Per-step cost decomposition (ms/it vs iters trade-off):
+  [spline cost]
+    QQN-L50       ms/it=  27.96  ->target=  45  total=1.258s
+    QQN-L50Spln   ms/it=  75.14  ->target=  42  total=3.156s
+  [warm-start cost]
+    QQN-L50TRfix  ms/it=  28.62  ->target=  45  total=1.288s
+    QQN-L50WS+    ms/it=  25.10  ->target=  57  total=1.431s
+  [fusion cost]
+    QQN-L50WS+    ms/it=  25.10  ->target=  57  total=1.431s
+    QQN-AndWS     ms/it=  26.95  ->target=  55  total=1.482s
+    QQN-SplnWS    ms/it=  67.69  ->target=  42  total=2.843s
+    QQN-Apex      ms/it=  71.00  ->target=  40  total=2.840s
+
+A/B controlled comparisons (vs first column = baseline):
+  [oracle: L-BFGS history]
+    QQN-L5      iters= 72 (Δ+0)  loss=1.100e-01  time=1.500s (Δ+0.000) (baseline)
+    QQN         iters= 62 (Δ-10)  loss=1.100e-01  time=1.710s (Δ+0.209)
+    QQN-L20     iters= 56 (Δ-16)  loss=1.097e-01  time=1.355s (Δ-0.146)
+    QQN-L50     iters= 45 (Δ-27)  loss=1.091e-01  time=1.258s (Δ-0.242)
+    QQN-L100    iters= 45 (Δ-27)  loss=1.091e-01  time=1.310s (Δ-0.191)
+  [oracle: momentum beta]
+    QQN-Mom01   iters=500 (Δ+0)  loss=1.371e-01  time=5.815s (Δ+0.000) (baseline)
+    QQN-Mom10   iters=500 (Δ+0)  loss=1.582e-01  time=5.812s (Δ-0.003)
+    QQN-Mom50   iters=500 (Δ+0)  loss=2.265e-01  time=5.712s (Δ-0.104)
+    QQN-Mom     iters=500 (Δ+0)  loss=3.419e-01  time=5.648s (Δ-0.168)
+  [oracle: accelerator class (Mom vs Shampoo)]
+    QQN-Mom10   iters=500 (Δ+0)  loss=1.582e-01  time=5.812s (Δ+0.000) (baseline)
+    QQN-Sh      iters=  9 (Δ-491)  loss=6.789e-01  time=16.576s (Δ+10.763)
+  [region: trust radius]
+    QQN-TR025   iters=132 (Δ+0)  loss=1.098e-01  time=2.171s (Δ+0.000) (baseline)
+    QQN-TR      iters= 66 (Δ-66)  loss=1.097e-01  time=1.545s (Δ-0.626)
+    QQN-TR2     iters= 65 (Δ-67)  loss=1.099e-01  time=1.495s (Δ-0.676)
+  [region: trust adaptivity]
+    QQN-TRfix   iters= 66 (Δ+0)  loss=1.097e-01  time=1.475s (Δ+0.000) (baseline)
+    QQN-TR      iters= 66 (Δ+0)  loss=1.097e-01  time=1.545s (Δ+0.070)
+  [region: combinator (Sequential box+TR)]
+    QQN-TR      iters= 66 (Δ+0)  loss=1.097e-01  time=1.545s (Δ+0.000) (baseline)
+    QQN-Box     iters= 64 (Δ-2)  loss=1.098e-01  time=1.422s (Δ-0.124)
+    QQN-Seq     iters= 70 (Δ+4)  loss=1.099e-01  time=1.757s (Δ+0.212)
+  [search: line search (oracle=L-BFGS-10)]
+    QQN         iters= 62 (Δ+0)  loss=1.100e-01  time=1.710s (Δ+0.000) (baseline)
+    QQN-BT      iters= 62 (Δ+0)  loss=1.100e-01  time=1.371s (Δ-0.339)
+    QQN-SW      iters=500 (Δ+438)  loss=3.714e-01  time=7.625s (Δ+5.915)
+    QQN-Spln    iters= 63 (Δ+1)  loss=1.099e-01  time=3.101s (Δ+1.391)
+  [spline: best-of-breed refinement]
+    QQN-Spln    iters= 63 (Δ+0)  loss=1.099e-01  time=3.101s (Δ+0.000) (baseline)
+    QQN-BTSpln  iters= 63 (Δ+0)  loss=1.099e-01  time=2.898s (Δ-0.203)
+    QQN-L50Spln iters= 42 (Δ-21)  loss=1.096e-01  time=3.156s (Δ+0.055)
+    QQN-L100Spln iters= 42 (Δ-21)  loss=1.096e-01  time=2.723s (Δ-0.378)
+    QQN-SplnTR  iters= 64 (Δ+1)  loss=1.099e-01  time=3.679s (Δ+0.579)
+    QQN-L50SplnTR iters= 39 (Δ-24)  loss=1.096e-01  time=2.753s (Δ-0.348)
+  [best-of-breed: L50 region (adaptive vs fixed)]
+    QQN-L50     iters= 45 (Δ+0)  loss=1.091e-01  time=1.258s (Δ+0.000) (baseline)
+    QQN-L50TR   iters= 45 (Δ+0)  loss=1.099e-01  time=1.331s (Δ+0.073)
+    QQN-L50TRfix iters= 45 (Δ+0)  loss=1.099e-01  time=1.288s (Δ+0.030)
+    QQN-L50TR2  iters= 47 (Δ+2)  loss=1.097e-01  time=1.369s (Δ+0.111)
+    QQN-L50BTTR iters= 45 (Δ+0)  loss=1.099e-01  time=1.297s (Δ+0.039)
+  [best-of-breed: L100 combos]
+    QQN-L100    iters= 45 (Δ+0)  loss=1.091e-01  time=1.310s (Δ+0.000) (baseline)
+    QQN-L100TR  iters= 45 (Δ+0)  loss=1.099e-01  time=1.380s (Δ+0.071)
+  [performance: warm-start (fixed TR, the robust speed lever)]
+    QQN-L50BTTR iters= 45 (Δ+0)  loss=1.099e-01  time=1.297s (Δ+0.000) (baseline)
+    QQN-L50WS+  iters= 57 (Δ+12)  loss=1.097e-01  time=1.431s (Δ+0.134)
+    QQN-L50WS   iters= 79 (Δ+34)  loss=1.100e-01  time=1.690s (Δ+0.393)
+  [performance: endpoint / fixed-TR robustness]
+    QQN-L50TRfix iters= 45 (Δ+0)  loss=1.099e-01  time=1.288s (Δ+0.000) (baseline)
+    QQN-L50Endpt iters= 57 (Δ+12)  loss=1.097e-01  time=1.423s (Δ+0.135)
+  [champion: diversity-preserving best stack]
+    QQN-L50BTTR iters= 45 (Δ+0)  loss=1.099e-01  time=1.297s (Δ+0.000) (baseline)
+    QQN-L50TRfix iters= 45 (Δ+0)  loss=1.099e-01  time=1.288s (Δ-0.009)
+    QQN-Fast    iters= 57 (Δ+12)  loss=1.090e-01  time=1.459s (Δ+0.162)
+    QQN-Champion iters= 59 (Δ+14)  loss=1.097e-01  time=1.461s (Δ+0.164)
+    QQN-Apex    iters= 40 (Δ-5)  loss=1.096e-01  time=2.840s (Δ+1.543)
+  [performance: warm-start fusion (oracle + spline levers)]
+    QQN-L50WS+  iters= 57 (Δ+0)  loss=1.097e-01  time=1.431s (Δ+0.000) (baseline)
+    QQN-AndWS   iters= 55 (Δ-2)  loss=1.095e-01  time=1.482s (Δ+0.051)
+    QQN-SplnWS  iters= 42 (Δ-15)  loss=1.098e-01  time=2.843s (Δ+1.412)
+    QQN-Apex    iters= 40 (Δ-17)  loss=1.096e-01  time=2.840s (Δ+1.409)
+  [best-of-breed: full stack]
+    QQN-L50BTTR iters= 45 (Δ+0)  loss=1.099e-01  time=1.297s (Δ+0.000) (baseline)
+    QQN-L50SplnTR iters= 39 (Δ-6)  loss=1.096e-01  time=2.753s (Δ+1.456)
+    QQN-Best    iters= 39 (Δ-6)  loss=1.096e-01  time=2.825s (Δ+1.527)
+
+[plot] Saved convergence plot to mnist_comparison.png
+[plot] Saved time-based convergence plot to mnist_comparison_time.png

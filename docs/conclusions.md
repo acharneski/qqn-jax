@@ -169,4 +169,4 @@ case.
 
 See [`algorithm.md`](algorithm.md) for the conceptual treatment,
 [`results.md`](results.md) for the full empirical breakdown, and
-[`../mnist_comparison.log`](../mnist_comparison.log) for the raw output.
+[`../mnist_comparison.log`](../results/mnist_comparison.log) for the raw output.

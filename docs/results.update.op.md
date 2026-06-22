@@ -1,12 +1,11 @@
 ---
 specifies:
-  - ../examples/mnist_comparison.py
+  - ../examples/fashion_mnist_mlp_comparison.py
 related:
-  - ../mnist_comparison.log
+  - ../results/fashion_mnist_mlp_comparison.log
   - results.md
   - algorithm.md
   - ../README.md
-  - ../examples/mnist_comparison.py
   - ../qqn_jax/solver.py
   - ../qqn_jax/line_search.py
   - ../qqn_jax/oracles.py

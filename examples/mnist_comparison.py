@@ -1375,6 +1375,12 @@ def main():
     # Optional: save a matplotlib plot if available.
     try:
         import matplotlib.pyplot as plt  # type: ignore
+        import os
+        from datetime import datetime
+
+        results_dir = "results"
+        os.makedirs(results_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         plt.figure(figsize=(7, 5))
         baselines = {"SGD", "Adam", "L-BFGS"}
@@ -1388,7 +1394,7 @@ def main():
         plt.title("MNIST optimizer comparison (QQN variants vs baselines)")
         plt.legend(ncol=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
-        out = "mnist_comparison.png"
+        out = os.path.join(results_dir, f"mnist_comparison_{timestamp}.png")
         plt.savefig(out, dpi=120, bbox_inches="tight")
         print(f"\n[plot] Saved convergence plot to {out}")
         # --- Second plot: loss vs wall-clock time ---
@@ -1405,7 +1411,7 @@ def main():
         plt.title("MNIST optimizer comparison vs time (QQN variants vs baselines)")
         plt.legend(ncol=2, fontsize=8)
         plt.grid(True, which="both", alpha=0.3)
-        out_time = "mnist_comparison_time.png"
+        out_time = os.path.join(results_dir, f"mnist_comparison_time_{timestamp}.png")
         plt.savefig(out_time, dpi=120, bbox_inches="tight")
         print(f"[plot] Saved time-based convergence plot to {out_time}")
     except Exception:

@@ -1,0 +1,98 @@
+=== 3-layer ReLU MLP comparison: QQN vs SGD vs Adam vs L-BFGS ===
+    dataset=fashion_mnist  hidden_sizes=[64, 64]  arch=x->64->64->10  activation=sigmoid  (non-convex objective)
+  classes=10  n_train=5000  n_test=1000  maxiter=1000
+
+  shared stop: f_target=1.0e-01  gtol=1.0e-08  time_budget=10.0s
+
+[data] Loaded fashion_mnist via tensorflow.keras.
+  model parameters: 55050
+
+optimizer       final_loss   iters   train_acc   test_acc   time(s)   ms/it  ->target   t->tgt  vs LBFGS     AUC
+------------------------------------------------------------------------------------------------------------------------
+QQN-L20       9.970319e-02     245      1.0000     0.8330     5.490   22.41       245    5.472     1.09x   -0.63
+QQN-L50       9.973583e-02     187      1.0000     0.8250     4.558   24.37       187    4.540     1.42x   -0.58
+QQN-L50And    9.973583e-02     187      1.0000     0.8250     4.732   25.30       187    4.712     1.42x   -0.58
+QQN-BT-S      9.980563e-02     277      1.0000     0.8270     8.427   30.42       277    8.411     0.96x   -0.64
+QQN-Box       9.990561e-02     289      1.0000     0.8270     6.514   22.54       289    6.496     0.92x   -0.65
+QQN           9.991766e-02     286      1.0000     0.8290     6.672   23.33       286    6.655     0.93x   -0.65
+QQN-BT        9.991766e-02     286      1.0000     0.8290     6.357   22.23       286    6.339     0.93x   -0.65
+L-BFGS        9.992748e-02     266      1.0000     0.8220     2.845   10.70       266    2.845     1.00x   -0.63
+QQN-TR        9.996738e-02     405      1.0000     0.8370     8.890   21.95       405    8.871     0.66x   -0.57
+QQN-Fast      9.997193e-02     312      1.0000     0.8480     7.136   22.87       312    7.118     0.85x   -0.61
+Adam          1.165810e-01    1000      0.9994     0.8360     1.069    1.07         —        —         —   -0.74
+QQN-Sec       1.756327e-01     472      0.9696     0.8430    10.027   21.24         —        —         —   -0.49
+QQN-And       2.808943e-01     460      0.9196     0.8480    10.037   21.82         —        —         —   -0.04
+SGD           4.439024e-01    1000      0.8520     0.8160     0.998    1.00         —        —         —   -0.20
+QQN-Mom-S     8.286071e-01     364      0.7138     0.6970    10.035   27.57         —        —         —    0.10
+QQN-Mom-S-BT  8.319064e-01     361      0.7130     0.6940    10.017   27.75         —        —         —    0.10
+QQN-Mom       1.170541e+00     490      0.6022     0.5840    10.025   20.46         —        —         —    0.22
+
+Pareto frontier (loss vs. time — non-dominated variants):
+  SGD          loss=4.4390e-01  time=0.998s
+  Adam         loss=1.1658e-01  time=1.069s
+  L-BFGS       loss=9.9927e-02  time=2.845s
+  QQN-L50      loss=9.9736e-02  time=4.558s
+  QQN-L20      loss=9.9703e-02  time=5.490s
+
+Iteration-efficiency leaderboard (target reached, fewest iters):
+  QQN-L50        iters= 187  time=4.540s  vs_LBFGS= 1.42x  final=9.9736e-02
+  QQN-L50And     iters= 187  time=4.712s  vs_LBFGS= 1.42x  final=9.9736e-02
+  QQN-L20        iters= 245  time=5.472s  vs_LBFGS= 1.09x  final=9.9703e-02
+  L-BFGS         iters= 266  time=2.845s  vs_LBFGS= 1.00x  final=9.9927e-02
+  QQN-BT-S       iters= 277  time=8.411s  vs_LBFGS= 0.96x  final=9.9806e-02
+  QQN-BT         iters= 286  time=6.339s  vs_LBFGS= 0.93x  final=9.9918e-02
+  QQN            iters= 286  time=6.655s  vs_LBFGS= 0.93x  final=9.9918e-02
+  QQN-Box        iters= 289  time=6.496s  vs_LBFGS= 0.92x  final=9.9906e-02
+  QQN-Fast       iters= 312  time=7.118s  vs_LBFGS= 0.85x  final=9.9972e-02
+  QQN-TR         iters= 405  time=8.871s  vs_LBFGS= 0.66x  final=9.9967e-02
+
+Convergence-rate profile (iteration first reaching each loss):
+  optimizer      <=1.0e+00   <=7.0e-01   <=5.0e-01   <=4.0e-01
+  QQN-L50               16          28          44          57
+  QQN-L50And            16          28          44          57
+  QQN-L20               16          28          46          60
+  QQN                   16          29          45          62
+  QQN-BT                16          29          45          62
+  QQN-BT-S              16          30          46          62
+  QQN-Box               16          30          46          63
+  L-BFGS                17          31          46          65
+  Adam                  20          35          52          68
+  QQN-Fast              32          49          63          81
+  QQN-Sec               24          37          63         125
+  QQN-TR                45          70         104         126
+  QQN-And              228         247         289         320
+  QQN-Mom                —           —           —           —
+  QQN-Mom-S            246           —           —           —
+  QQN-Mom-S-BT         246           —           —           —
+  SGD                  138         286         624           —
+
+Stall report (never reached the shared target):
+  Adam           final=1.1658e-01  iters=1000  time=1.069s  [slow (no target in maxiter)]
+  QQN-Sec        final=1.7563e-01  iters=472  time=10.027s  [time-budget exhausted]
+  QQN-And        final=2.8089e-01  iters=460  time=10.037s  [time-budget exhausted]
+  SGD            final=4.4390e-01  iters=1000  time=0.998s  [slow (no target in maxiter)]
+  QQN-Mom-S      final=8.2861e-01  iters=364  time=10.035s  [time-budget exhausted]
+  QQN-Mom-S-BT   final=8.3191e-01  iters=361  time=10.017s  [time-budget exhausted]
+  QQN-Mom        final=1.1705e+00  iters=490  time=10.025s  [time-budget exhausted]
+
+Loss trajectory (log10, sampled):
+  QQN          0.37  -0.17  -0.41  -0.56  -0.70  -0.80  -0.88  -0.93  -0.97  -1.00
+  QQN-BT       0.37  -0.17  -0.41  -0.56  -0.70  -0.80  -0.88  -0.93  -0.97  -1.00
+  QQN-BT-S     0.37  -0.16  -0.40  -0.55  -0.67  -0.80  -0.88  -0.93  -0.97  -1.00
+  QQN-L20      0.37  -0.14  -0.37  -0.53  -0.67  -0.79  -0.88  -0.94  -0.97  -1.00
+  QQN-L50      0.37  -0.06  -0.29  -0.45  -0.60  -0.73  -0.85  -0.93  -0.98  -1.00
+  QQN-Mom      0.37   0.35   0.34   0.30   0.25   0.20   0.16   0.12   0.09   0.07
+  QQN-Mom-S    0.37   0.33   0.24   0.15   0.09   0.04   0.00  -0.03  -0.06  -0.08
+  QQN-Mom-S-BT   0.37   0.33   0.24   0.15   0.09   0.04   0.00  -0.03  -0.05  -0.08
+  QQN-Sec      0.37  -0.23  -0.38  -0.44  -0.51  -0.58  -0.63  -0.68  -0.72  -0.76
+  QQN-And      0.37   0.34   0.33   0.33   0.32  -0.22  -0.35  -0.43  -0.50  -0.55
+  QQN-L50And   0.37  -0.06  -0.29  -0.45  -0.60  -0.73  -0.85  -0.93  -0.98  -1.00
+  QQN-TR       0.37  -0.00  -0.25  -0.43  -0.61  -0.75  -0.84  -0.91  -0.97  -1.00
+  QQN-Fast     0.37  -0.03  -0.33  -0.50  -0.64  -0.78  -0.89  -0.94  -0.97  -1.00
+  QQN-Box      0.37  -0.18  -0.41  -0.57  -0.69  -0.80  -0.89  -0.93  -0.97  -1.00
+  SGD          0.37   0.04  -0.10  -0.19  -0.25  -0.30  -0.31  -0.34  -0.36  -0.35
+  Adam         0.37  -0.56  -0.78  -0.89  -0.76  -0.90  -0.95   0.03  -0.86  -0.93
+  L-BFGS       0.37  -0.14  -0.37  -0.53  -0.66  -0.78  -0.87  -0.93  -0.97  -1.00
+
+[plot] Saved vs_iter convergence plot to results/fashion_mnist_mlp_comparison_vs_iter_20260622-113119.png
+[plot] Saved vs_time convergence plot to results/fashion_mnist_mlp_comparison_vs_time_20260622-113119.png

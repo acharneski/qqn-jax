@@ -1,6 +1,6 @@
 ---
 documents:
-  - ../mnist_comparison.log
+  - ../results/fashion_mnist_mlp_comparison.log
 related:
   - algorithm.md
   - ../README.md
@@ -24,7 +24,7 @@ selection), the **region** (projective constraint), and the orthogonal
 python examples/mnist_comparison.py
 ```
 
-The full console log lives in [`../mnist_comparison.log`](../mnist_comparison.log)
+The full console log lives in [`../mnist_comparison.log`](../results/mnist_comparison.log)
 and is the source of every number quoted below.
 
 ---
@@ -394,7 +394,7 @@ central thesis that coherently blending gradient and oracle along the quadratic
 path, navigated by a robust line search, yields a fast, modular optimizer.
 
 See [`algorithm.md`](algorithm.md) for the conceptual treatment and
-[`../mnist_comparison.log`](../mnist_comparison.log) for the full raw output.
+[`../mnist_comparison.log`](../results/mnist_comparison.log) for the full raw output.
 - **QQN-Best / QQN-L50SplnTR** reach the target in just **38 iterations**
   (1.87× fewer than L-BFGS's 71) — the fewest-iteration converging variants.
 - **QQN-Apex** reaches it in **40 iterations** (1.77× fewer than L-BFGS).
