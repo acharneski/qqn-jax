@@ -2,6 +2,7 @@
 specifies:
   - ../examples/fashion_mnist_mlp_comparison.py
 related:
+  - ../results/fashion_mnist_mlp_comparison*.log
   - results.md
   - algorithm.md
   - ../README.md

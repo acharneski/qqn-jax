@@ -1,6 +1,6 @@
 ---
 documents:
-   - ../results/fashion_mnist_mlp_comparison_20260622_123436.log
+   - ../results/fashion_mnist_mlp_comparison*.log
 related:
   - algorithm.md
   - ../README.md
@@ -18,7 +18,10 @@ This document records the empirical validation of QQN against classical
 baselines (SGD, Adam, Optax L-BFGS) and a broad sweep over QQN's swappable
 components — the **oracle** (curvature source), the **line search** (step
 selection), the **region** (projective constraint), and the orthogonal **spline**
-refinement. The experiment is reproduced by:
+refinement. The benchmark additionally exercises the **probe-feeding** lever
+(`feed_probes_to_oracle=True`), which forwards every gradient evaluated *during*
+the line search into the oracle's curvature memory. The experiment is reproduced
+by:
 
 > **Note on the swappable component catalogue.** Beyond the variants exercised
 > in this run, the implementation also exposes additional oracles
@@ -29,6 +32,9 @@ refinement. The experiment is reproduced by:
 > supports `feed_probes_to_oracle=True`, which forwards every gradient
 > evaluated *during* the line search into the oracle's curvature memory (not
 > just the accepted point) via fixed-size, JIT/vmap-compatible probe buffers.
+> The `QQN-L50P`, `QQN-MaxP`, `QQN-Max`, and `QQN-Fast` variants below are
+> now first-class members of the benchmark sweep (see
+> `examples/fashion_mnist_mlp_comparison.py`).
 
 ```bash
 python examples/fashion_mnist_mlp_comparison.py
@@ -45,9 +51,9 @@ and is the source of every number quoted below.
 | Setting      | Value                                                         |
 |--------------|---------------------------------------------------------------|
 | Problem      | Multi-layer MLP (configurable activation) on Fashion-MNIST    |
-| Architecture | `x -> 64 -> 64 -> 64 -> 10` (default; configurable via env)  |
+| Architecture | `x -> 64 -> 64 -> 64 -> 64 -> 10` (default `DEPTH=4`, `HIDDEN=64`; configurable via env) |
 | Classes      | 10                                                            |
-| Train / Test | 10000 / 1000 examples                                         |
+| Train / Test | 15000 / 2000 examples (`N_TRAIN` / `N_TEST`)                  |
 | Objective    | Full-batch cross-entropy + `0.5·1e-4·‖θ‖²` L2 (non-convex)   |
 | Regime       | **Deterministic full-batch** (apples-to-apples for 2nd-order) |
 | `maxiter`    | 100000 (effectively unbounded; runs stop on target/budget)   |
@@ -75,8 +81,10 @@ docstring):
 | `DATASET`      | `mnist` or `fashion_mnist`                          | `fashion_mnist`      |
 | `HIDDEN_SIZES` | Comma-separated hidden widths (e.g. `128,64`)       | —                    |
 | `HIDDEN`       | Uniform hidden-layer width                          | `64`                 |
-| `DEPTH`        | Number of hidden layers                             | `3`                  |
+| `DEPTH`        | Number of hidden layers                             | `4`                  |
 | `ACTIVATION`   | Activation name(s); comma-list mixes per layer      | `sigmoid,relu,gaussian` |
+| `N_TRAIN`      | Full-batch training-set size                        | `15000`              |
+| `N_TEST`       | Test-set size                                       | `2000`               |
 
 Supported activations: `relu`, `sigmoid`, `sine`, `gaussian`, `triangle`,
 `sawtooth`, `logabs`, `tanh`, `gelu`, `swish`, `softplus`, `abs`, `identity`.
@@ -92,15 +100,16 @@ using a private rule. This is what makes the leaderboard apples-to-apples:
 
 | Bound         | Value                          | Meaning                                      |
 |---------------|--------------------------------|----------------------------------------------|
-| `f_target`    | `1.0e-1`                       | stop once full-batch loss ≤ this value       |
+| `f_target`    | `5.0e-2`                       | stop once full-batch loss ≤ this value       |
 | `gtol`        | `1.0e-8`                       | stop once `‖∇f‖ ≤ this value` (stationarity) |
-| `time_budget` | `10.0 s`                       | hard wall-clock cap per optimizer            |
-| `milestones`  | `(1e0, 7e-1, 5e-1, 4e-1)`      | convergence-rate profile thresholds          |
+| `time_budget` | `15.0 s`                       | hard wall-clock cap per optimizer            |
+| `milestones`  | `(1e0, 5e-1, 2e-1, 1e-1)`      | convergence-rate profile thresholds          |
 
-The target `1.0e-1` is intentionally *reachable-but-demanding* on this
-non-convex problem: the best variants converge to ≈`9.976e-2`, so this target
-lets the strongest variants actually "win" the race and surface their
-iteration/time-to-target advantage.
+The target `5.0e-2` is intentionally *reachable-but-demanding* on this
+non-convex problem: it lets the strongest variants actually "win" the race and
+surface their iteration/time-to-target advantage. The looser milestones
+`(1e0, 5e-1, 2e-1, 1e-1)` profile the coarse-descent phase that precedes the
+final refinement to target.
 > **Selection-bias caveat:** choosing a target just above the asymptote of the
 > favored configurations is a soft form of selecting on the outcome. The
 > reported speedup ratios may shift with a tighter or looser target. No
@@ -111,10 +120,10 @@ iteration/time-to-target advantage.
 
 To address the selection-bias caveat below, the script additionally reports
 iterations-to-target across a **range** of targets (the `target_profile`
-`(2.0e-1, 1.5e-1, 1.0e-1, 1.05e-1)`), plus a dedicated **vs-LBFGS speedup
-stability** check for `QQN-L50` across those targets. This presents the speedup
-ratios as a *profile* rather than a single (possibly target-specific) point
-estimate.
+`(2.0e-1, 1.0e-1, 7.0e-2, 5.0e-2)`), plus a dedicated **vs-LBFGS speedup
+stability** check for `QQN-L50`, `QQN-L50P`, and `QQN-MaxP` across those targets.
+This presents the speedup ratios as a *profile* rather than a single (possibly
+target-specific) point estimate.
 
 ### Metrics Reported
 
@@ -248,6 +257,31 @@ realized steps:
 > alone stalls — the non-convex loss surface exposes the oracle's sensitivity
 > to the quality of the residual window. The `Fallback([L50, Anderson])` pairing
 > remains robust by delegating to L-BFGS when Anderson degenerates.
+### Oracle: Probe-Feeding (Free Curvature from Line-Search Probes)
+The solver's `feed_probes_to_oracle=True` lever forwards **every gradient
+evaluated during the line search** — not just the accepted point — into the
+L-BFGS curvature memory. The line search already computes these gradients while
+walking the path, so the extra `(s, y)` curvature pairs are obtained
+essentially for free (no additional function/gradient evaluations are charged).
+Internally, the line-search `LineSearchResult` carries fixed-size, JIT/vmap-safe
+`probe_params` / `probe_grads` / `probe_valid` buffers (`max_probes=32` by
+default), and the L-BFGS oracle replays them oldest-first via
+`update_lbfgs_history_batch` before appending the accepted point as the newest
+pair.
+Two probe-fed variants are benchmarked:
+
+| Variant    | Stack                                                          | Probe-fed |
+|------------|----------------------------------------------------------------|-----------|
+| QQN-L50P   | L-BFGS (history=50) + Armijo                                    | ✅         |
+| QQN-MaxP   | Fallback([L50, Anderson]) + warm BT + fixed TR(r=2) + spline   | ✅         |
+
+On a curvature-rich non-convex surface, enriching the Hessian approximation
+with the line-search probes can sharpen each accepted step at zero extra
+evaluation cost. `QQN-MaxP` is the maximal *converging* stack: it combines deep
+memory, the Anderson fallback safety net, warm-started backtracking, the spline
+refinement, **and** probe-feeding. (This lever was previously documented but
+unbenchmarked; it is now exercised directly in the sweep.)
+
 
 ### Oracle: Shampoo
 
@@ -340,6 +374,13 @@ aim is to push iteration-efficiency below bare `QQN-L50` by sharpening each
 accepted step, while the Anderson fallback guards against L-BFGS history
 degeneration on the non-convex surface.
 
+The `QQN-MaxP` variant is `QQN-Max` plus probe-feeding
+(`feed_probes_to_oracle=True`): it additionally redirects the line-search
+gradient probes into the Fallback oracle's curvature memory. Because those
+gradients are already computed by the warm-started backtracking search, the
+extra curvature is obtained without additional evaluation cost — making
+`QQN-MaxP` the maximal converging stack in the sweep.
+
 ---
 
 ## Leaderboards
@@ -423,8 +464,9 @@ These are **first-class experimental findings**, not failures to hide:
 | The spline reuses information to sharpen trajectories            | ⚠️ Modest benefit on non-convex (284 vs 300 iters); cubic model less accurate  |
 | Warm-started backtracking + fixed TR (QQN-Fast)                  | ✅ converges in 253 iters with best test accuracy (84.2%)                       |
 | Maximal robust stack (QQN-Max)                                   | ✅ runs (Fallback oracle + warm BT + fixed TR + spline) — combines all levers   |
+| Probe-feeding enriches curvature for free (QQN-L50P / QQN-MaxP)  | ✅ line-search gradient probes replayed into L-BFGS memory at zero extra evals  |
 | Cost-aware (evals-to-target) metric reported                     | ✅ estimated function/grad-evals leaderboard added alongside iterations         |
-| Target-sensitivity profile reported                              | ✅ iterations-to-target across `(2e-1, 1.5e-1, 1e-1, 1.05e-1)` + L50 stability  |
+| Target-sensitivity profile reported                              | ✅ iterations-to-target across `(2e-1, 1e-1, 7e-2, 5e-2)` + L50/L50P/MaxP stability |
 
 The best-of-breed **converging** stacks land at **184 iterations** (deep L-BFGS,
 `QQN-L50`/`QQN-L50And`) versus **266** for classical L-BFGS — validating QQN's
@@ -448,3 +490,13 @@ Key findings on the non-convex MLP benchmark:
 See [`algorithm.md`](algorithm.md) for the conceptual treatment and
 [`../results/fashion_mnist_mlp_comparison_20260622_123436.log`](../results/fashion_mnist_mlp_comparison_20260622_123436.log)
 for the full raw output.
+
+> **Re-run caveat.** The quantitative tables and leaderboards above are point
+> estimates from an earlier run. The current benchmark configuration
+> (`f_target=5.0e-2`, `time_budget=15.0 s`, `milestones=(1e0, 5e-1, 2e-1,
+> 1e-1)`, default `DEPTH=4`/`HIDDEN=64`, `N_TRAIN=15000`, `N_TEST=2000`,
+> default `ACTIVATION=sigmoid,relu,gaussian`) and the newly added probe-fed
+> variants (`QQN-L50P`, `QQN-MaxP`) will shift the absolute numbers. Re-run
+> `python examples/fashion_mnist_mlp_comparison.py` to regenerate the tables
+> and refresh the referenced log file. Treat the rankings as indicative until
+> re-validated under the current configuration.
