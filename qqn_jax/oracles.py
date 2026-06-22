@@ -250,22 +250,26 @@ def ShampooOracle(
 
     def direction(params, grad, state):
         g = grad.reshape(-1, 1)  # (n, 1)
-        L_new = state.L + g @ g.T
-        R_new = state.R + g.T @ g
 
         do_refresh = (state.step % update_freq) == 0
 
+        # The (n,n) outer product ``g gᵀ`` is O(n²) every step; only the L
+        # accumulator is rank-meaningful here (R is 1×1). Accumulate R cheaply
+        # always, but only pay for the dense L update + eigh on a refresh.
+        R_new = state.R + (grad @ grad)[None, None]
+
         def refresh(_):
+            L_new = state.L + g @ g.T
             Lr = _matrix_inverse_pth_root(L_new, 4.0, epsilon)
             Rr = _matrix_inverse_pth_root(R_new, 4.0, epsilon)
             precond = (Lr @ g) @ Rr  # (n, 1)
-            return precond.reshape(-1)
+            return precond.reshape(-1), L_new
 
         def keep(_):
             # Fall back to scaled gradient when not refreshing roots.
-            return grad
+            return grad, state.L
 
-        precond = jax.lax.cond(do_refresh, refresh, keep, operand=None)
+        precond, L_new = jax.lax.cond(do_refresh, refresh, keep, operand=None)
         d = -precond
         new_state = ShampooState(L=L_new, R=R_new, step=state.step + 1)
         return d, new_state
@@ -327,12 +331,16 @@ def AndersonOracle(window: int = 5, reg: float = 1e-8, beta: float = 1.0) -> Ora
         # slots are zero and contribute nothing to the normal equations.
         g_hist = state.g_history
         x_hist = state.x_history
-        # Prepend the *current* (params, grad) as the freshest column so the
-        # differences anchor on the present iterate.
-        g_full = jnp.concatenate([grad[None, :], g_hist], axis=0)
-        x_full = jnp.concatenate([params[None, :], x_hist], axis=0)
-        dG = (g_full[:-1] - g_full[1:]).T  # (n, window)
-        dX = (x_full[:-1] - x_full[1:]).T  # (n, window)
+        # Differences anchored on the present iterate, computed without the
+        # extra (window+1, n) concat allocations: the first column is
+        # (current - newest_stored), the rest are stored[k] - stored[k+1].
+        # dG[:, 0] = grad - g_hist[0]; dG[:, k>=1] = g_hist[k-1] - g_hist[k].
+        dG_first = (grad - g_hist[0])[:, None]
+        dX_first = (params - x_hist[0])[:, None]
+        dG_rest = (g_hist[:-1] - g_hist[1:]).T  # (n, window-1)
+        dX_rest = (x_hist[:-1] - x_hist[1:]).T
+        dG = jnp.concatenate([dG_first, dG_rest], axis=1)  # (n, window)
+        dX = jnp.concatenate([dX_first, dX_rest], axis=1)
 
         # Solve (dGᵀ dG + reg·I) θ = dGᵀ ∇f  — an (m × m) system.
         m = dG.shape[1]

@@ -19,6 +19,11 @@ import jax.numpy as jnp
 from functools import partial
 
 
+def jnp_select_buf(flag, a, b):
+    """Scalar-flag select between two equally-shaped buffers (lax.select)."""
+    return jax.lax.cond(flag, lambda: a, lambda: b)
+
+
 class LBFGSState(NamedTuple):
     """State for the L-BFGS oracle.
 
@@ -79,28 +84,26 @@ def update_lbfgs_history(
     eps = jnp.asarray(1e-10, dtype=params.dtype)
     valid = ys > eps * jnp.sqrt(yy * ss + eps)
 
-    # Roll buffers to make room at index 0 (most recent first).
-    new_s = jnp.where(
-        valid,
-        jnp.roll(state.s_history, shift=1, axis=0).at[0].set(s),
-        state.s_history,
-    )
-    new_y = jnp.where(
-        valid,
-        jnp.roll(state.y_history, shift=1, axis=0).at[0].set(y),
-        state.y_history,
-    )
     # Guard the reciprocal: jnp.where evaluates BOTH branches, so a raw
     # ``1.0 / ys`` produces inf/NaN when ys ≤ 0 even though it is masked out.
     # Under jax.grad that NaN backpropagates through the non-selected branch
     # and poisons the gradient. Compute on a safe denominator first.
     safe_ys = jnp.where(valid, ys, jnp.ones_like(ys))
     rho = jnp.where(valid, 1.0 / safe_ys, 0.0)
-    new_rho = jnp.where(
-        valid,
-        jnp.roll(state.rho_history, shift=1, axis=0).at[0].set(rho),
-        state.rho_history,
-    )
+
+    # Shift buffers down by one row (drop the oldest) only when ``valid``;
+    # otherwise keep the existing buffer untouched. A slice-based shift avoids
+    # the full extra copy that ``jnp.roll`` allocates, and selecting the whole
+    # *shifted* buffer (instead of a per-element ``where`` over the original)
+    # keeps the masking to a single cheap scalar-controlled select.
+    def _shift_insert(buf, row):
+        # buf: (m, ...) -> drop last, prepend ``row``.
+        shifted = jnp.concatenate([row[None], buf[:-1]], axis=0)
+        return shifted
+
+    new_s = jnp.where(valid, _shift_insert(state.s_history, s), state.s_history)
+    new_y = jnp.where(valid, _shift_insert(state.y_history, y), state.y_history)
+    new_rho = jnp.where(valid, _shift_insert(state.rho_history, rho), state.rho_history)
     new_count = jnp.where(
         valid,
         jnp.minimum(state.count + 1, history_size),
@@ -144,14 +147,21 @@ def update_lbfgs_history_batch(
         # Honor the per-probe validity flag (e.g. unused scratch slots): when
         # ``ok`` is False, keep the histories/gamma but still advance prev_*
         # so subsequent (s, y) differences anchor on the latest real probe.
+        #
+        # ``update_lbfgs_history`` already keeps buffers unchanged when its own
+        # curvature guard fails, so we only need to gate the (large) history
+        # buffers on ``ok`` here. ``prev_params``/``prev_grad`` are always
+        # advanced to the latest probe so the next (s, y) anchors correctly.
         merged = LBFGSState(
-            s_history=jnp.where(ok, updated.s_history, carry_state.s_history),
-            y_history=jnp.where(ok, updated.y_history, carry_state.y_history),
-            rho_history=jnp.where(ok, updated.rho_history, carry_state.rho_history),
+            s_history=jnp_select_buf(ok, updated.s_history, carry_state.s_history),
+            y_history=jnp_select_buf(ok, updated.y_history, carry_state.y_history),
+            rho_history=jnp_select_buf(
+                ok, updated.rho_history, carry_state.rho_history
+            ),
             count=jnp.where(ok, updated.count, carry_state.count),
             gamma=jnp.where(ok, updated.gamma, carry_state.gamma),
-            prev_params=jnp.where(ok, updated.prev_params, carry_state.prev_params),
-            prev_grad=jnp.where(ok, updated.prev_grad, carry_state.prev_grad),
+            prev_params=updated.prev_params,
+            prev_grad=updated.prev_grad,
         )
         return merged, None
 

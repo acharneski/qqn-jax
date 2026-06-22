@@ -31,10 +31,18 @@ Network architecture selection:
        HIDDEN_SIZES=256,128,64 python examples/fashion_mnist_mlp_comparison.py
        DEPTH=3 HIDDEN=128 python examples/fashion_mnist_mlp_comparison.py
 Activation function selection:
-    The hidden-layer activation is configurable via the ``ACTIVATION``
-    environment variable. Supported values: ``relu``, ``sigmoid`` (default),
-    and ``sine``. The output layer is always linear (logits). Example:
-        ACTIVATION=relu python examples/fashion_mnist_mlp_comparison.py
+     The hidden-layer activation is configurable via the ``ACTIVATION``
+     environment variable. Supported values: ``relu``, ``sigmoid`` (default),
+     ``sine``, ``gaussian``, ``triangle``, ``sawtooth``, ``logabs``, ``tanh``,
+     ``gelu``, ``swish``, ``softplus``, ``abs``, and ``identity``. The output
+     layer is always linear (logits). Example:
+         ACTIVATION=relu python examples/fashion_mnist_mlp_comparison.py
+
+     Mixed activations: pass a comma-separated list to assign different
+     activation types to different hidden layers. The list is cycled if it is
+     shorter than the number of hidden layers. Examples:
+         ACTIVATION=relu,sine,gaussian python examples/fashion_mnist_mlp_comparison.py
+         ACTIVATION=tanh,gaussian DEPTH=4 python examples/fashion_mnist_mlp_comparison.py
 
 
 Data loading / install instructions:
@@ -194,23 +202,92 @@ _ACTIVATIONS = {
     "relu": jax.nn.relu,
     "sigmoid": jax.nn.sigmoid,
     "sine": jnp.sin,
+    # Gaussian "bump" activation, exp(-x^2): localized, smooth, RBF-like.
+    "gaussian": lambda x: jnp.exp(-(x**2)),
+    # Triangle waveform: periodic, piecewise-linear sawtooth-triangle in [-1, 1].
+    "triangle": lambda x: (
+        2.0 * jnp.abs(2.0 * (x / (2.0 * jnp.pi) - jnp.floor(x / (2.0 * jnp.pi) + 0.5)))
+        - 1.0
+    ),
+    # Symmetric logarithm of |x|: ln(|x| + 1) * sign(x), heavy-tailed & smooth-ish.
+    "logabs": lambda x: jnp.sign(x) * jnp.log1p(jnp.abs(x)),
+    # Hyperbolic tangent: classic bounded squashing nonlinearity.
+    "tanh": jnp.tanh,
+    # GELU: smooth ReLU-like activation.
+    "gelu": jax.nn.gelu,
+    # Swish / SiLU: x * sigmoid(x), smooth & non-monotonic.
+    "swish": jax.nn.swish,
+    # Softplus: smooth ReLU approximation.
+    "softplus": jax.nn.softplus,
+    # Sawtooth waveform: periodic ramp in [-1, 1).
+    "sawtooth": lambda x: (
+        2.0 * (x / (2.0 * jnp.pi) - jnp.floor(x / (2.0 * jnp.pi) + 0.5))
+    ),
+    # Absolute value: V-shaped, even nonlinearity.
+    "abs": jnp.abs,
+    # Identity (linear) — useful for selectively linear layers in a mix.
+    "identity": lambda x: x,
 }
 
 
-def _parse_activation():
-    """Resolve the hidden-layer activation from the ``ACTIVATION`` env var.
-    Supported values: ``relu``, ``sigmoid`` (default), ``sine``.
-    Returns:
-        A tuple ``(name, fn)`` of the activation name and callable.
-    """
-    raw = os.environ.get("ACTIVATION", "sigmoid").strip().lower()
-    if raw not in _ACTIVATIONS:
+def _resolve_activation_name(name):
+    """Resolve a single activation name to ``(name, fn)``; fall back to sigmoid."""
+    name = name.strip().lower()
+    if name not in _ACTIVATIONS:
         print(
-            f"[config] Unknown ACTIVATION={raw!r}; falling back to 'sigmoid'. "
+            f"[config] Unknown ACTIVATION={name!r}; falling back to 'sigmoid'. "
             f"Valid values: {', '.join(sorted(_ACTIVATIONS))}."
         )
-        raw = "sigmoid"
-    return raw, _ACTIVATIONS[raw]
+        name = "sigmoid"
+    return name, _ACTIVATIONS[name]
+
+
+def _parse_activation(n_hidden_layers=None):
+    """Resolve the hidden-layer activation(s) from the ``ACTIVATION`` env var.
+
+    The ``ACTIVATION`` variable accepts either:
+      * a single name (applied to every hidden layer), e.g. ``ACTIVATION=relu``;
+      * a comma-separated list to *mix* activations across hidden layers, e.g.
+        ``ACTIVATION=relu,sine,gaussian`` assigns ``relu`` to the first hidden
+        layer, ``sine`` to the second, and ``gaussian`` to the third.
+
+    When a list is given but its length does not match the number of hidden
+    layers, the list is cycled (repeated) to cover all hidden layers (and
+    truncated if too long).
+
+    Supported names: relu, sigmoid (default), sine, gaussian, triangle,
+    logabs, tanh, gelu, swish, softplus, sawtooth, abs, identity.
+
+    Args:
+        n_hidden_layers: number of hidden layers, used to expand/cycle a mixed
+            activation list. If ``None``, the parsed (un-expanded) spec is
+            returned as-is.
+
+    Returns:
+        A tuple ``(name, fn)`` where:
+          * for a single activation, ``name`` is the string and ``fn`` the callable;
+          * for a mixed spec, ``name`` is a list of names and ``fn`` a list of
+            callables (one entry per hidden layer when ``n_hidden_layers`` given).
+    """
+    raw = os.environ.get("ACTIVATION", "relu,sigmoid").strip().lower()
+    tokens = [t.strip() for t in raw.split(",") if t.strip() != ""]
+    if not tokens:
+        tokens = ["sigmoid"]
+
+    if len(tokens) == 1:
+        # Single activation applied uniformly.
+        return _resolve_activation_name(tokens[0])
+
+    # Mixed activations: resolve each token to a callable.
+    resolved = [_resolve_activation_name(t) for t in tokens]
+    names = [n for n, _ in resolved]
+    fns = [f for _, f in resolved]
+
+    if n_hidden_layers is not None and n_hidden_layers > 0:
+        # Cycle / truncate so there is exactly one activation per hidden layer.
+        names = [names[i % len(names)] for i in range(n_hidden_layers)]
+        fns = [fns[i % len(fns)] for i in range(n_hidden_layers)]
+    return names, fns
 
 
 def _param_layout(dim, hidden_sizes, n_classes):
@@ -232,12 +309,26 @@ def init_params(dim, hidden_sizes, n_classes, key, activation="sigmoid"):
 
     Uses He-style init for ReLU and Xavier/Glorot-style init otherwise
     (sigmoid/sine), which keeps activations well-scaled at init.
+     ``activation`` may be a single name string (applied uniformly) or a
+     list of per-hidden-layer name strings for mixed-activation networks.
     """
     dims = _layer_dims(dim, hidden_sizes, n_classes)
     keys = jax.random.split(key, len(dims) - 1)
+    n_weight_layers = len(dims) - 1
+    n_hidden = n_weight_layers - 1
+    # Build a per-weight-layer list of activation names. The output layer is
+    # always linear, so its init uses the Glorot rule (relu==False branch).
+    if isinstance(activation, (list, tuple)):
+        hidden_names = [
+            activation[i % len(activation)] for i in range(max(n_hidden, 0))
+        ]
+    else:
+        hidden_names = [activation] * max(n_hidden, 0)
+    layer_names = hidden_names + ["identity"]  # output layer is linear
     blocks = []
-    for k, fan_in, fan_out in zip(keys, dims[:-1], dims[1:]):
-        if activation == "relu":
+    for li, (k, fan_in, fan_out) in enumerate(zip(keys, dims[:-1], dims[1:])):
+        act_name = layer_names[li] if li < len(layer_names) else "identity"
+        if act_name == "relu":
             # He initialization for ReLU: std = sqrt(2 / fan_in).
             scale = jnp.sqrt(2.0 / fan_in)
         else:
@@ -267,11 +358,18 @@ def _unpack(params, dim, hidden_sizes, n_classes):
 def _forward(params, X, dim, hidden_sizes, n_classes, activation=jax.nn.sigmoid):
     layers = _unpack(params, dim, hidden_sizes, n_classes)
     h = X
+    # ``activation`` may be a single callable (applied to every hidden layer)
+    # or a list/tuple of callables (one per hidden layer) for mixed networks.
+    n_hidden = len(layers) - 1
+    if isinstance(activation, (list, tuple)):
+        acts = [activation[i % len(activation)] for i in range(n_hidden)]
+    else:
+        acts = [activation] * n_hidden
     # Apply the activation after every layer except the final (output) layer.
     for i, (w, b) in enumerate(layers):
         h = h @ w + b
         if i < len(layers) - 1:
-            h = activation(h)
+            h = acts[i](h)
     return h
 
 
@@ -601,12 +699,13 @@ def main():
 
     # Problem configuration
     n_classes = 10
-    n_train = 5000
+    n_train = 10000
     n_test = 1000
     # Hidden-layer topology is configurable via env vars (see module docstring).
     hidden_sizes = _parse_hidden_sizes()
-    # Hidden-layer activation is configurable via the ACTIVATION env var.
-    activation_name, activation_fn = _parse_activation()
+    # Hidden-layer activation(s) configurable via ACTIVATION env var. May be a
+    # single name (uniform) or a comma-separated list to mix per-layer.
+    activation_name, activation_fn = _parse_activation(len(hidden_sizes))
     maxiter = 100000
 
     # --- Shared, fair termination bounds applied to EVERY optimizer ---
@@ -629,13 +728,20 @@ def main():
 
     n_hidden_layers = len(hidden_sizes)
     arch_str = "->".join(str(s) for s in (["x"] + hidden_sizes + [n_classes]))
+    # Mixed activations render as a comma-joined list; a single activation
+    # renders as its bare name.
+    activation_str = (
+        ",".join(activation_name)
+        if isinstance(activation_name, (list, tuple))
+        else activation_name
+    )
     print(
         f"=== {n_hidden_layers + 1}-layer ReLU MLP comparison: "
         "QQN vs SGD vs Adam vs L-BFGS ==="
     )
     print(
         f"    dataset={dataset}  hidden_sizes={hidden_sizes}  "
-        f"arch={arch_str}  activation={activation_name}  (non-convex objective)"
+        f"arch={arch_str}  activation={activation_str}  (non-convex objective)"
     )
     print(
         f"  classes={n_classes}  n_train={n_train}  n_test={n_test}  "
@@ -1110,7 +1216,7 @@ def main():
         # activation, class count, and training-set size).
         config_title = (
             f"{n_hidden_layers + 1}-layer MLP {arch_str} on {dataset}\n"
-            f"activation={activation_name}  classes={n_classes}  "
+            f"activation={activation_str}  classes={n_classes}  "
             f"n_train={n_train}  maxiter={maxiter}  (QQN variants vs baselines)"
         )
 
