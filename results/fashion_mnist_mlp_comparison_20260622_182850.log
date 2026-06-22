@@ -1,0 +1,9 @@
+=== 5-layer ReLU MLP comparison: QQN vs SGD vs Adam vs L-BFGS ===
+    dataset=fashion_mnist  hidden_sizes=[512, 512, 512, 512]  arch=x->512->512->512->512->10  activation=tanh,gelu,tanh,gelu  (non-convex objective)
+  classes=10  n_train=60000  n_test=10000  maxiter=100000
+
+  shared stop: f_target=6.0e-02  gtol=1.0e-08  time_budget=90.0s
+
+[data] Loaded fashion_mnist via tensorflow.keras.
+  model parameters: 1195018
+

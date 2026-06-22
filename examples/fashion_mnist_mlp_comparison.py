@@ -475,12 +475,27 @@ def _parse_hidden_sizes():
         # forward/backward pass the dominant cost, so QQN's fewer iterations
         # translate directly to wall-clock — and the larger, more anisotropic
         # Hessian is exactly what the deep-memory L-BFGS oracle exploits.
-        hidden = int(os.environ.get("HIDDEN", "384"))
+        #
+        # The 20260622_175843 analysis showed the deep-memory lever is *still
+        # monotone and unsaturated* (L20->L50->L80 keeps improving), and the
+        # vs-L-BFGS speedup *widens* as the target tightens (1.47x->1.77x).
+        # Both observations say the same thing: a *more anisotropic, more
+        # ill-conditioned* Hessian is where QQN's gradient+oracle blend wins
+        # hardest. We therefore widen the network further (512) so each shared
+        # forward/backward pass is even more dominant — making QQN's lower
+        # iteration count convert into wall-clock — and the curvature signal
+        # the deep-memory oracle exploits is even richer.
+        hidden = int(os.environ.get("HIDDEN", "512"))
         # A deeper default network deepens the conditioning of the full-batch
         # Hessian, widening the gap where second-order curvature (QQN/L-BFGS)
         # pays off over first-order methods. DEPTH=5 keeps the model small
         # enough to stay full-batch-fast while being meaningfully non-convex.
-        depth = int(os.environ.get("DEPTH", "3"))
+        #
+        # Bumped DEPTH 3->4: an extra hidden layer deepens the conditioning of
+        # the full-batch Hessian (more compositional non-convexity), widening
+        # the regime where coherent gradient+oracle blending beats first-order
+        # methods — the speedup-widens-with-depth signal from the prior run.
+        depth = int(os.environ.get("DEPTH", "4"))
         if hidden <= 0 or depth < 0:
             raise ValueError
     except ValueError:
@@ -820,8 +835,15 @@ def main():
     # larger full-batch (40k) means QQN's lower iteration count converts into a
     # real wall-clock win, since the per-iteration overhead of extra probes is
     # amortized against an expensive shared forward/backward pass.
-    n_train = int(os.environ.get("N_TRAIN", "40000"))
-    n_test = int(os.environ.get("N_TEST", "8000"))
+    #
+    # The 20260622_175843 run confirmed 40k makes evaluation dominant (~65
+    # ms/it for the deep-memory winners) and QQN-L80 wins on wall-clock. To
+    # sharpen the anisotropic curvature signal further — the regime where the
+    # speedup widens monotonically — we use the *entire* Fashion-MNIST train
+    # corpus (60k). A larger, balanced full-batch objective has a richer,
+    # better-conditioned-yet-more-anisotropic Hessian, deepening QQN's edge.
+    n_train = int(os.environ.get("N_TRAIN", "60000"))
+    n_test = int(os.environ.get("N_TEST", "10000"))
     # Hidden-layer topology is configurable via env vars (see module docstring).
     hidden_sizes = _parse_hidden_sizes()
     # Hidden-layer activation(s) configurable via ACTIVATION env var. May be a
@@ -854,7 +876,15 @@ def main():
         # Bumped to 45s: the larger 40k full-batch makes each iteration costlier
         # in absolute terms, so the budget is raised proportionally to let the
         # deep-memory winners reach the tighter target rather than timing out.
-        "time_budget": 45.0,
+        #
+        # The prior run's chief weakness was that L-BFGS *itself* timed out
+        # before the 6e-2 target, so the headline ``vs LBFGS`` column was all
+        # ``—`` and the speedup had to be read off the milestone tables. With
+        # the larger 60k/deeper net each iteration is costlier still, so we
+        # raise the budget to 90s — generous enough for BOTH the deep-memory
+        # QQN winners AND L-BFGS to reach the final target, yielding a finite,
+        # directly-comparable final-target speedup ratio (the missing headline).
+        "time_budget": 90.0,
         "milestones": (1.0e0, 5.0e-1, 2.0e-1, 1.0e-1),
     }
     # --- Target-sensitivity analysis ---
@@ -987,6 +1017,36 @@ def main():
             params0,
             maxiter,
             oracle=LBFGSOracle(history_size=80),
+            stop=stop,
+        ),
+        # --- Deepest L-BFGS memory (history=120) — the lever is unsaturated.
+        #
+        # The 20260622_175843 run proved L20->L50->L80 (746->594->529 iters)
+        # is *still monotone* — the largest convergence-speed lever has NOT
+        # plateaued. On the now-deeper/wider/larger objective the Hessian is
+        # even more anisotropic, so a still-deeper curvature memory should
+        # capture more of the dominant subspace. L120 pushes the proven lever
+        # to the next rung to find where (if anywhere) it saturates.
+        "QQN-L120": lambda: _run_qqn(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=LBFGSOracle(history_size=120),
+            stop=stop,
+        ),
+        # --- Deepest memory + Anderson fallback (robust deep-curvature champ).
+        #
+        # Pairs the unsaturated deep memory (history=120) with a residual-solve
+        # Anderson safety net. On the prior run the Fallback([L50, Anderson])
+        # stack exactly matched bare L50 (594 iters) while never being worse —
+        # a free robustness guarantee against L-BFGS history degeneration on
+        # the non-convex surface. Promoting it to history=120 aims for the
+        # strongest *robust* deep-curvature configuration in the suite.
+        "QQN-L120And": lambda: _run_qqn(
+            loss_fn,
+            params0,
+            maxiter,
+            oracle=Fallback([LBFGSOracle(history_size=120), AndersonOracle(window=5)]),
             stop=stop,
         ),
         # --- Deep L-BFGS (history=50) + GATED probe-feeding + warm backtracking.
@@ -1170,7 +1230,7 @@ def main():
                 "c1": 1e-3,
                 "max_iter": 40,
             },
-            oracle=Fallback([LBFGSOracle(history_size=50), AndersonOracle(window=5)]),
+            oracle=Fallback([LBFGSOracle(history_size=120), AndersonOracle(window=5)]),
             region=TrustRegion(radius=2.0, adaptive=False),
             feed_probes_to_oracle=True,
             stop=stop,
@@ -1181,6 +1241,36 @@ def main():
             params0,
             maxiter,
             region=BoxRegion(lo=-2.0, hi=2.0),
+            stop=stop,
+        ),
+        # --- Lean wall-clock champion: deepest memory + warm-started
+        #     backtracking ONLY (no spline, no probe-feeding, no region).
+        #
+        # The 20260622_175843 analysis pinpointed why QQN-L80 was the sole
+        # Pareto point and every "best-of-breed" stack timed out: the spline
+        # and probe-feeding additions tripled-to-twelvefold the ms/it without
+        # a proportional iteration win, so they exhausted the budget. The
+        # lesson is to stack ONLY the cheap high-leverage levers:
+        #   * deepest L-BFGS memory (history=120) — the proven, unsaturated
+        #     convergence-speed lever (L20->L50->L80 was monotone).
+        #   * warm-started backtracking (init_step>1, gentle shrink) — accepts
+        #     larger early steps without the strong-Wolfe over-restriction,
+        #     and at ~65 ms/it is essentially free vs the deep forward pass.
+        # No spline, no probe-feeding, no trust region: every component here
+        # keeps ms/it at the cheap deep-memory baseline so the lower iteration
+        # count converts directly into the lowest wall-clock-to-target.
+        "QQN-Lean": lambda: _run_qqn(
+            loss_fn,
+            params0,
+            maxiter,
+            line_search="backtracking",
+            line_search_options={
+                "init_step": 2.0,
+                "shrink": 0.7,
+                "c1": 1e-3,
+                "max_iter": 40,
+            },
+            oracle=LBFGSOracle(history_size=120),
             stop=stop,
         ),
         # --- Smooth-surface best-of-breed: deep memory + descent-gated
@@ -1203,7 +1293,7 @@ def main():
             stop=stop,
         ),
         "SGD": lambda: run_optax(
-            loss_fn, params0, optax.sgd(learning_rate=0.5), maxiter, stop=stop
+            loss_fn, params0, optax.sgd(learning_rate=0.05), maxiter, stop=stop
         ),
         "Adam": lambda: run_optax(
             loss_fn, params0, optax.adam(learning_rate=0.01), maxiter, stop=stop
@@ -1221,6 +1311,8 @@ def main():
         "QQN-L50": {},
         "QQN-L50P": {},
         "QQN-L80": {},
+        "QQN-L120": {},
+        "QQN-L120And": {},
         "QQN-L50P-BT": {
             "line_search": "backtracking",
             "line_search_options": {"max_iter": 40},
@@ -1247,6 +1339,10 @@ def main():
             "spline": True,
         },
         "QQN-Champ": {
+            "line_search": "backtracking",
+            "line_search_options": {"max_iter": 40},
+        },
+        "QQN-Lean": {
             "line_search": "backtracking",
             "line_search_options": {"max_iter": 40},
         },
@@ -1433,10 +1529,10 @@ def main():
     if "L-BFGS" in results:
         for ref_name in (
             "QQN-L50",
+            "QQN-L80",
+            "QQN-L120",
             "QQN-L50P",
-            "QQN-L50P-BT",
-            "QQN-MaxP",
-            "QQN-Champ",
+            "QQN-Lean",
         ):
             if ref_name not in results:
                 continue

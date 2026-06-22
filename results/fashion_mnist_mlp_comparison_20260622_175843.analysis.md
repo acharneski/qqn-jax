@@ -28,19 +28,19 @@ documented theory:
 
 ## Configuration
 
-| Setting | Value |
-| --- | --- |
-| Dataset | `fashion_mnist` (via tensorflow.keras) |
-| Architecture | `x->384->384->384->10` (4 weight layers) |
-| Activation | `tanh,gelu,tanh` (mixed, cycled per hidden layer) |
-| Parameters | 600,970 |
-| Train / Test | 40,000 / 8,000 (class-balanced) |
-| Objective | full-batch cross-entropy + `l2=1e-4` (non-convex) |
-| `maxiter` | 100,000 |
-| `f_target` | 6.0e-2 |
-| `gtol` | 1.0e-8 |
-| `time_budget` | 45.0 s |
-| Milestones | 1.0, 5.0e-1, 2.0e-1, 1.0e-1 |
+| Setting       | Value                                             |
+|---------------|---------------------------------------------------|
+| Dataset       | `fashion_mnist` (via tensorflow.keras)            |
+| Architecture  | `x->384->384->384->10` (4 weight layers)          |
+| Activation    | `tanh,gelu,tanh` (mixed, cycled per hidden layer) |
+| Parameters    | 600,970                                           |
+| Train / Test  | 40,000 / 8,000 (class-balanced)                   |
+| Objective     | full-batch cross-entropy + `l2=1e-4` (non-convex) |
+| `maxiter`     | 100,000                                           |
+| `f_target`    | 6.0e-2                                            |
+| `gtol`        | 1.0e-8                                            |
+| `time_budget` | 45.0 s                                            |
+| Milestones    | 1.0, 5.0e-1, 2.0e-1, 1.0e-1                       |
 
 The objective is deliberately heavy (40k full-batch, ~601k params) so that a
 forward/backward pass dominates per-iteration cost — the regime the
@@ -49,33 +49,33 @@ convert into a genuine wall-clock advantage.
 
 ## Leaderboard (final loss, ascending)
 
-| optimizer | final_loss | iters | test_acc | time(s) | ms/it | ->target | vs LBFGS |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| QQN-L80 | 5.996e-2 | 529 | 0.8763 | 34.84 | 65.9 | **529** | — |
-| QQN-L50 | 5.996e-2 | 594 | 0.8760 | 38.33 | 64.5 | **594** | — |
-| QQN-L50And | 5.996e-2 | 594 | 0.8760 | 38.96 | 65.6 | **594** | — |
-| QQN-L20 | 6.361e-2 | 746 | 0.8749 | 45.04 | 60.4 | — | — |
-| L-BFGS | 6.607e-2 | 908 | 0.8726 | 45.03 | 49.6 | — | — |
-| QQN-Box | 8.410e-2 | 765 | 0.8771 | 45.05 | 58.9 | — | — |
-| QQN | 8.616e-2 | 731 | 0.8766 | 45.06 | 61.7 | — | — |
-| QQN-BT | 8.723e-2 | 713 | 0.8771 | 45.05 | 63.2 | — | — |
-| QQN-Fast | 8.886e-2 | 647 | 0.8758 | 45.05 | 69.6 | — | — |
-| QQN-TR | 1.093e-1 | 742 | 0.8753 | 45.06 | 60.7 | — | — |
-| QQN-Max | 2.147e-1 | 202 | 0.8786 | 45.08 | 223.2 | — | — |
-| QQN-S | 2.716e-1 | 201 | 0.8724 | 45.11 | 224.4 | — | — |
-| QQN-BT-S | 2.738e-1 | 197 | 0.8725 | 45.13 | 229.1 | — | — |
-| QQN-Sec | 3.927e-1 | 557 | 0.8599 | 45.07 | 80.9 | — | — |
-| QQN-And | 4.539e-1 | 383 | 0.8423 | 45.08 | 117.7 | — | — |
-| QQN-Champ | 4.670e-1 | 88 | 0.8280 | 45.38 | 515.7 | — | — |
-| QQN-L50P-BT | 4.802e-1 | 87 | 0.8245 | 45.35 | 521.2 | — | — |
-| Adam | 4.962e-1 | 2334 | 0.8575 | 45.01 | 19.3 | — | — |
-| QQN-Mom | 5.039e-1 | 543 | 0.8274 | 45.04 | 83.0 | — | — |
-| QQN-Smooth | 5.358e-1 | 57 | 0.8046 | 45.07 | 790.7 | — | — |
-| QQN-MaxP | 5.546e-1 | 59 | 0.8114 | 45.29 | 767.7 | — | — |
-| QQN-Mom-S | 5.798e-1 | 203 | 0.8041 | 45.05 | 221.9 | — | — |
-| QQN-Mom-S-BT | 5.807e-1 | 201 | 0.8040 | 45.09 | 224.3 | — | — |
-| QQN-L50P | 1.694e+0 | 1 | 0.3950 | 45.08 | 45076 | — | — |
-| SGD | 8.851e+1 | 2401 | 0.1000 | 45.01 | 18.8 | — | — |
+| optimizer    | final_loss | iters | test_acc | time(s) | ms/it | ->target | vs LBFGS |
+|--------------|------------|-------|----------|---------|-------|----------|----------|
+| QQN-L80      | 5.996e-2   | 529   | 0.8763   | 34.84   | 65.9  | **529**  | —        |
+| QQN-L50      | 5.996e-2   | 594   | 0.8760   | 38.33   | 64.5  | **594**  | —        |
+| QQN-L50And   | 5.996e-2   | 594   | 0.8760   | 38.96   | 65.6  | **594**  | —        |
+| QQN-L20      | 6.361e-2   | 746   | 0.8749   | 45.04   | 60.4  | —        | —        |
+| L-BFGS       | 6.607e-2   | 908   | 0.8726   | 45.03   | 49.6  | —        | —        |
+| QQN-Box      | 8.410e-2   | 765   | 0.8771   | 45.05   | 58.9  | —        | —        |
+| QQN          | 8.616e-2   | 731   | 0.8766   | 45.06   | 61.7  | —        | —        |
+| QQN-BT       | 8.723e-2   | 713   | 0.8771   | 45.05   | 63.2  | —        | —        |
+| QQN-Fast     | 8.886e-2   | 647   | 0.8758   | 45.05   | 69.6  | —        | —        |
+| QQN-TR       | 1.093e-1   | 742   | 0.8753   | 45.06   | 60.7  | —        | —        |
+| QQN-Max      | 2.147e-1   | 202   | 0.8786   | 45.08   | 223.2 | —        | —        |
+| QQN-S        | 2.716e-1   | 201   | 0.8724   | 45.11   | 224.4 | —        | —        |
+| QQN-BT-S     | 2.738e-1   | 197   | 0.8725   | 45.13   | 229.1 | —        | —        |
+| QQN-Sec      | 3.927e-1   | 557   | 0.8599   | 45.07   | 80.9  | —        | —        |
+| QQN-And      | 4.539e-1   | 383   | 0.8423   | 45.08   | 117.7 | —        | —        |
+| QQN-Champ    | 4.670e-1   | 88    | 0.8280   | 45.38   | 515.7 | —        | —        |
+| QQN-L50P-BT  | 4.802e-1   | 87    | 0.8245   | 45.35   | 521.2 | —        | —        |
+| Adam         | 4.962e-1   | 2334  | 0.8575   | 45.01   | 19.3  | —        | —        |
+| QQN-Mom      | 5.039e-1   | 543   | 0.8274   | 45.04   | 83.0  | —        | —        |
+| QQN-Smooth   | 5.358e-1   | 57    | 0.8046   | 45.07   | 790.7 | —        | —        |
+| QQN-MaxP     | 5.546e-1   | 59    | 0.8114   | 45.29   | 767.7 | —        | —        |
+| QQN-Mom-S    | 5.798e-1   | 203   | 0.8041   | 45.05   | 221.9 | —        | —        |
+| QQN-Mom-S-BT | 5.807e-1   | 201   | 0.8040   | 45.09   | 224.3 | —        | —        |
+| QQN-L50P     | 1.694e+0   | 1     | 0.3950   | 45.08   | 45076 | —        | —        |
+| SGD          | 8.851e+1   | 2401  | 0.1000   | 45.01   | 18.8  | —        | —        |
 
 Note: the `->target` column is `—` for everything except the three
 deep-memory winners; **no method other than L80/L50/L50And reached the
@@ -104,13 +104,13 @@ quadratic path as `t → 1` near the optimum (the **superlinear** regime in
 
 From the target-sensitivity profile, `QQN-L50` vs `L-BFGS`:
 
-| target | QQN-L50 iters | L-BFGS iters | speedup |
-| --- | --- | --- | --- |
-| ≤2.0e-1 | 210 | 308 | **1.47x** |
-| ≤1.5e-1 | 265 | 405 | **1.53x** |
-| ≤1.0e-1 | 350 | 563 | **1.61x** |
-| ≤8.0e-2 | 442 | 782 | **1.77x** |
-| ≤6.0e-2 | 594 | — (timeout) | — |
+| target  | QQN-L50 iters | L-BFGS iters | speedup   |
+|---------|---------------|--------------|-----------|
+| ≤2.0e-1 | 210           | 308          | **1.47x** |
+| ≤1.5e-1 | 265           | 405          | **1.53x** |
+| ≤1.0e-1 | 350           | 563          | **1.61x** |
+| ≤8.0e-2 | 442           | 782          | **1.77x** |
+| ≤6.0e-2 | 594           | — (timeout)  | —         |
 
 The monotone widening (1.47x → 1.77x) is the signature of QQN's
 gradient+oracle blend transitioning from conservative early steps toward the
