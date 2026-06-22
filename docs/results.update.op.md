@@ -12,3 +12,4 @@ related:
 
 Improve QQN Performance without reducing diversity.
 Improve the test to perform a more effective experiment.
+Improve the problem (e.g. data config, NN structure) to show the benefits of QQN (we are explicitly searching for the problem space where this is competitive.)

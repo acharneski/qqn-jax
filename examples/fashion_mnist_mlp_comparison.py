@@ -269,7 +269,7 @@ def _parse_activation(n_hidden_layers=None):
           * for a mixed spec, ``name`` is a list of names and ``fn`` a list of
             callables (one entry per hidden layer when ``n_hidden_layers`` given).
     """
-    raw = os.environ.get("ACTIVATION", "relu,sigmoid").strip().lower()
+    raw = os.environ.get("ACTIVATION", "sigmoid,relu,gaussian").strip().lower()
     tokens = [t.strip() for t in raw.split(",") if t.strip() != ""]
     if not tokens:
         tokens = ["sigmoid"]
@@ -416,7 +416,7 @@ def _parse_hidden_sizes():
             )
     try:
         hidden = int(os.environ.get("HIDDEN", "64"))
-        depth = int(os.environ.get("DEPTH", "2"))
+        depth = int(os.environ.get("DEPTH", "3"))
         if hidden <= 0 or depth < 0:
             raise ValueError
     except ValueError:
@@ -439,13 +439,19 @@ def _converged(value, gnorm, f_target, gtol):
     return False
 
 
-def _update_milestones(milestones, hit, value, it, now):
-    """Record the first iteration/time each loss milestone is crossed."""
+def _update_milestones(milestones, hit, value, it, now, evals=None):
+    """Record the first iteration/time/evals each loss milestone is crossed.
+
+    Each recorded milestone hit is a tuple ``(iteration, wall_time, evals)``
+    so the convergence-rate profile can report not just *when* (iteration)
+    but also *how long* (wall-clock) and *how much work* (estimated
+    function/gradient evaluations) it took to first cross each loss level.
+    """
     if not milestones:
         return
     for m in milestones:
         if hit.get(m) is None and value <= m:
-            hit[m] = (it, now)
+            hit[m] = (it, now, evals)
 
 
 def _grad_norm(loss_fn, params):
@@ -531,6 +537,9 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
     gtol = stop.get("gtol")
     time_budget = stop.get("time_budget")
     milestones = stop.get("milestones", ())
+    # Estimated evaluations per accepted iteration, used to attach a
+    # cost-aware (evals) figure to every milestone crossing.
+    evals_per_iter = _estimate_evals_per_iter("QQN", qqn_kwargs)
 
     solver = QQN(loss_fn, maxiter=maxiter, **qqn_kwargs)
     state = solver.init_state(params0)
@@ -540,7 +549,7 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
-    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0)
+    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0, 0)
     t0 = time.perf_counter()
     update = jax.jit(solver.update)
     for it in range(maxiter):
@@ -549,7 +558,14 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
         now = time.perf_counter() - t0
         times.append(now)
         gnorm = _grad_norm(loss_fn, params)
-        _update_milestones(milestones, milestone_hits, history[-1], it + 1, now)
+        _update_milestones(
+            milestones,
+            milestone_hits,
+            history[-1],
+            it + 1,
+            now,
+            int(round((it + 1) * evals_per_iter)),
+        )
         if iters_to_target is None and _converged(history[-1], gnorm, f_target, gtol):
             iters_to_target = it + 1
             time_to_target = now
@@ -594,14 +610,14 @@ def run_optax(loss_fn, params0, optimizer, maxiter, stop=None):
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
-    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0)
+    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0, 0)
     t0 = time.perf_counter()
     for it in range(maxiter):
         params, opt_state, value, gnorm = step(params, opt_state)
         history.append(float(value))
         now = time.perf_counter() - t0
         times.append(now)
-        _update_milestones(milestones, milestone_hits, history[-1], it + 1, now)
+        _update_milestones(milestones, milestone_hits, history[-1], it + 1, now, it + 1)
         if iters_to_target is None and _converged(
             history[-1], float(gnorm), f_target, gtol
         ):
@@ -629,6 +645,8 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
     gtol = stop.get("gtol")
     time_budget = stop.get("time_budget")
     milestones = stop.get("milestones", ())
+    # L-BFGS issues ~3 evals per accepted step (zoom line-search probes).
+    evals_per_iter = _estimate_evals_per_iter("L-BFGS")
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
     optimizer = optax.lbfgs()
@@ -654,14 +672,21 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
-    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0)
+    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0, 0)
     t0 = time.perf_counter()
     for it in range(maxiter):
         params, opt_state, value, gnorm = step(params, opt_state)
         history.append(float(value))
         now = time.perf_counter() - t0
         times.append(now)
-        _update_milestones(milestones, milestone_hits, history[-1], it + 1, now)
+        _update_milestones(
+            milestones,
+            milestone_hits,
+            history[-1],
+            it + 1,
+            now,
+            int(round((it + 1) * evals_per_iter)),
+        )
         if iters_to_target is None and _converged(
             history[-1], float(gnorm), f_target, gtol
         ):
@@ -1168,11 +1193,95 @@ def main():
             hit = kv[1]["milestone_hits"].get(tightest)
             return hit[0] if hit is not None else 10**9
 
+        def _sort_key_time(kv):
+            hit = kv[1]["milestone_hits"].get(tightest)
+            return hit[1] if hit is not None else float("inf")
+
         for name, r in sorted(results.items(), key=_sort_key):
             cells = []
             for m in milestones:
                 hit = r["milestone_hits"].get(m)
                 cells.append("—" if hit is None else f"{hit[0]}")
+            print("  " + f"{name:<12}" + "".join(f"{c:>12}" for c in cells))
+
+        # --- Inter-milestone timing breakdown ---
+        # For each method, report the *incremental* wall-time and eval cost
+        # spent descending from one milestone to the next. This exposes which
+        # phase of optimization (early coarse descent vs. late fine-tuning) is
+        # the most expensive for each optimizer.
+        print(
+            "\nInter-milestone cost breakdown "
+            "(Δtime[s] / Δevals between consecutive milestones):"
+        )
+        seg_labels = []
+        prev = None
+        for m in milestones:
+            if prev is None:
+                seg_labels.append(f"start->{m:.1e}")
+            else:
+                seg_labels.append(f"{prev:.1e}->{m:.1e}")
+            prev = m
+        header = "  " + f"{'optimizer':<12}" + "".join(f"{s:>20}" for s in seg_labels)
+        print(header)
+        for name, r in sorted(results.items(), key=_sort_key_time):
+            cells = []
+            prev_hit = (0, 0.0, 0)
+            for m in milestones:
+                hit = r["milestone_hits"].get(m)
+                if hit is None:
+                    cells.append("—")
+                    continue
+                dt = hit[1] - prev_hit[1]
+                if len(hit) >= 3 and hit[2] is not None and prev_hit[2] is not None:
+                    de = hit[2] - prev_hit[2]
+                    cells.append(f"{dt:.3f}/{de}")
+                else:
+                    cells.append(f"{dt:.3f}/—")
+                prev_hit = hit
+            print("  " + f"{name:<12}" + "".join(f"{c:>20}" for c in cells))
+        # --- Milestone wall-time profile ---
+        print(
+            "\nConvergence-rate profile (wall-clock seconds first reaching each loss):"
+        )
+        header = (
+            "  "
+            + f"{'optimizer':<12}"
+            + "".join(f"{f'<={m:.1e}':>12}" for m in milestones)
+        )
+        print(header)
+
+        for name, r in sorted(results.items(), key=_sort_key_time):
+            cells = []
+            for m in milestones:
+                hit = r["milestone_hits"].get(m)
+                cells.append("—" if hit is None else f"{hit[1]:.3f}")
+            print("  " + f"{name:<12}" + "".join(f"{c:>12}" for c in cells))
+        # --- Milestone eval-count profile (cost-aware) ---
+        print(
+            "\nConvergence-rate profile "
+            "(estimated function/grad evals first reaching each loss):"
+        )
+        header = (
+            "  "
+            + f"{'optimizer':<12}"
+            + "".join(f"{f'<={m:.1e}':>12}" for m in milestones)
+        )
+        print(header)
+
+        def _sort_key_evals(kv):
+            hit = kv[1]["milestone_hits"].get(tightest)
+            if hit is None or len(hit) < 3 or hit[2] is None:
+                return 10**9
+            return hit[2]
+
+        for name, r in sorted(results.items(), key=_sort_key_evals):
+            cells = []
+            for m in milestones:
+                hit = r["milestone_hits"].get(m)
+                if hit is None or len(hit) < 3 or hit[2] is None:
+                    cells.append("—")
+                else:
+                    cells.append(f"{hit[2]}")
             print("  " + f"{name:<12}" + "".join(f"{c:>12}" for c in cells))
 
     # --- Stall report (non-converging variants) ---
