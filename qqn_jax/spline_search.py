@@ -221,6 +221,7 @@ def spline_wrap(inner_search: Callable) -> Callable:
             )
         else:
             m1 = tree_vdot(inner.new_grad, direction)
+
         # --- Superlinear probe (the symmetry your doc promised) ----------
         # If the downstream tangent still descends (m1 < 0), the minimum is
         # *beyond* the inner step. Extend the bracket once and let the cubic
