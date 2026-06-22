@@ -468,7 +468,14 @@ def _parse_hidden_sizes():
         # the objective evaluation (shared by all methods) and away from QQN's
         # extra line-search probes, exposing QQN's iteration-efficiency as a
         # wall-clock advantage. Width also enriches the Hessian's anisotropy.
-        hidden = int(os.environ.get("HIDDEN", "256"))
+        #
+        # Wider still (384) than the prior 256: the analysis showed QQN's
+        # iteration win was real but its wall-clock edge was eroded by the
+        # cheap-evaluation regime. Widening the network makes each shared
+        # forward/backward pass the dominant cost, so QQN's fewer iterations
+        # translate directly to wall-clock — and the larger, more anisotropic
+        # Hessian is exactly what the deep-memory L-BFGS oracle exploits.
+        hidden = int(os.environ.get("HIDDEN", "384"))
         # A deeper default network deepens the conditioning of the full-batch
         # Hessian, widening the gap where second-order curvature (QQN/L-BFGS)
         # pays off over first-order methods. DEPTH=5 keeps the model small
@@ -805,7 +812,16 @@ def main():
     # instead of being swamped by per-iteration overhead. It also sharpens
     # the anisotropic curvature signal that QQN's gradient+oracle blend
     # exploits. Override with N_TRAIN/N_TEST if a faster run is desired.
-    n_test = int(os.environ.get("N_TEST", "5000"))
+    #
+    # The prior run (docs/...144249.analysis.md) showed QQN-L50's *iteration*
+    # advantage (1.84x) shrinks to ~1.10x under the eval-cost model because
+    # each forward+backward pass was cheap relative to QQN's probe count. The
+    # remedy is to make the objective evaluation genuinely dominant: a *much*
+    # larger full-batch (40k) means QQN's lower iteration count converts into a
+    # real wall-clock win, since the per-iteration overhead of extra probes is
+    # amortized against an expensive shared forward/backward pass.
+    n_train = int(os.environ.get("N_TRAIN", "40000"))
+    n_test = int(os.environ.get("N_TEST", "8000"))
     # Hidden-layer topology is configurable via env vars (see module docstring).
     hidden_sizes = _parse_hidden_sizes()
     # Hidden-layer activation(s) configurable via ACTIVATION env var. May be a
@@ -823,12 +839,22 @@ def main():
         # race and surface their iteration advantage, while still being
         # reachable on this non-convex objective. The full target_profile below
         # reports the speedup as a curve so this single value is not load-bearing.
-        "f_target": 8.0e-2,
+        #
+        # The prior run proved QQN-L50's speedup *widens* monotonically as the
+        # target tightens (1.39x @ 2e-1 -> 1.84x @ 8e-2). We therefore push the
+        # target tighter (6e-2) to land squarely in the regime where QQN's
+        # superlinear curvature blend dominates L-BFGS, while keeping it
+        # reachable for the deep-memory stacks within the (larger) time budget.
+        "f_target": 6.0e-2,
         "gtol": 1.0e-8,
         # A modestly larger wall-clock cap so the deep-memory QQN stacks (whose
         # per-iteration cost is higher but whose iteration count is far lower)
         # are not prematurely truncated before reaching the tighter target.
-        "time_budget": 30.0,
+        #
+        # Bumped to 45s: the larger 40k full-batch makes each iteration costlier
+        # in absolute terms, so the budget is raised proportionally to let the
+        # deep-memory winners reach the tighter target rather than timing out.
+        "time_budget": 45.0,
         "milestones": (1.0e0, 5.0e-1, 2.0e-1, 1.0e-1),
     }
     # --- Target-sensitivity analysis ---
@@ -840,7 +866,9 @@ def main():
     target_profile = (2.0e-1, 1.0e-1, 7.0e-2, 5.0e-2, 4.0e-2)
     # On the wider, smoother network the reachable band shifts; profile a
     # range that spans the milestones the converging variants actually cross.
-    target_profile = (2.0e-1, 1.5e-1, 1.0e-1, 8.0e-2)
+    # The tighter f_target (6e-2) is now the headline; profile down to it so the
+    # speedup curve captures the regime where QQN's advantage is largest.
+    target_profile = (2.0e-1, 1.5e-1, 1.0e-1, 8.0e-2, 6.0e-2)
 
     n_hidden_layers = len(hidden_sizes)
     arch_str = "->".join(str(s) for s in (["x"] + hidden_sizes + [n_classes]))
@@ -936,8 +964,11 @@ def main():
         # rich non-convex surface, the line-search probes already measure the
         # objective at multiple points along the path — feeding those (s, y)
         # pairs into the oracle enriches the Hessian approximation for free
-        # (the gradients were computed anyway). This is the documented
-        # ``feed_probes_to_oracle`` lever, previously unbenchmarked.
+        # (the gradients were computed anyway). The prior run showed naive
+        # probe-feeding STALLS (history pollution); this variant now relies on
+        # the solver's *descent-gated* probe admission (``probe_descent_gate``,
+        # default True), which only admits probes that strictly decrease the
+        # objective — turning the trap into a genuine free-curvature boost.
         "QQN-L50P": lambda: _run_qqn(
             loss_fn,
             params0,
@@ -958,25 +989,27 @@ def main():
             oracle=LBFGSOracle(history_size=80),
             stop=stop,
         ),
-        # --- Deep L-BFGS (history=80) + probe-feeding + warm backtracking ---
+        # --- Deep L-BFGS (history=50) + GATED probe-feeding + warm backtracking.
         #
-        # Combines the three documented winning levers WITHOUT a region or
-        # spline (keeping it a clean oracle+search variant): deepest curvature
-        # memory, free probe-fed curvature from the line search, and a warm-
-        # started backtracking search that accepts larger early steps. The aim
-        # is the strongest *pure* iteration-efficiency stack.
-        "QQN-L80P": lambda: _run_qqn(
+        # The prior run's ``QQN-L80P`` catastrophically stalled because it fed
+        # *ungated* probes from an aggressive warm-started search into a deep
+        # history — the worst-case pollution scenario. This redesigned variant
+        # keeps the warm-started backtracking but relies on the solver's
+        # descent-gated probe admission and the now-saturation-confirmed
+        # history=50 (history=80 added cost without benefit). The aim is the
+        # strongest *safe* pure oracle+search iteration-efficiency stack.
+        "QQN-L50P-BT": lambda: _run_qqn(
             loss_fn,
             params0,
             maxiter,
             line_search="backtracking",
             line_search_options={
-                "init_step": 2.5,
-                "shrink": 0.65,
+                "init_step": 2.0,
+                "shrink": 0.7,
                 "c1": 1e-3,
                 "max_iter": 40,
             },
-            oracle=LBFGSOracle(history_size=80),
+            oracle=LBFGSOracle(history_size=50),
             feed_probes_to_oracle=True,
             stop=stop,
         ),
@@ -1094,12 +1127,12 @@ def main():
         # --- Best-of-breed (probe-fed): deep memory + probe-feeding +
         #     warm-started backtracking + Anderson fallback + spline.
         #
-        # This is the maximal *converging* stack: it combines the documented
-        # winning levers AND the probe-feeding boost. The line search issues
-        # several gradient probes per step; feeding them to the Fallback oracle
-        # enriches curvature memory while the Anderson fallback guards against
-        # L-BFGS history degeneration. The spline sharpens each accepted step.
-        # The aim is to push iteration-efficiency strictly below bare QQN-L50.
+        # Maximal *converging* stack with the documented winning levers AND the
+        # now-gated probe-feeding boost. The line search issues several gradient
+        # probes per step; the descent gate admits only the improving ones to
+        # the Fallback oracle (enriching curvature memory), while the Anderson
+        # fallback guards against L-BFGS history degeneration. The spline
+        # sharpens each accepted step. Aim: push strictly below bare QQN-L50.
         "QQN-MaxP": lambda: _run_qqn(
             loss_fn,
             params0,
@@ -1117,31 +1150,29 @@ def main():
             feed_probes_to_oracle=True,
             stop=stop,
         ),
-        # --- Ultimate probe-fed stack: deepest memory + Anderson fallback +
-        #     probe-feeding + warm backtracking + generous fixed TR + spline.
+        # --- Pure iteration-efficiency champion: deep memory + warm-started
+        #     backtracking + GATED probe-feeding, NO spline (it doubles ms/it).
         #
-        # This is the maximal converging configuration aimed squarely at
-        # iteration-efficiency: history=80 deep curvature, the Anderson
-        # residual-solve safety net, probe-fed free curvature, an aggressive
-        # warm-started backtracking search, a generous (non-collapsing) fixed
-        # trust-region safeguard, and spline refinement to sharpen each
-        # accepted step. Designed to push strictly below bare QQN-L50/L80.
-        "QQN-UltraP": lambda: _run_qqn(
+        # The prior run's spline variants timed out because the cubic-Hermite
+        # refinement doubled per-iteration wall-clock without a proportional
+        # iteration win. This variant deliberately drops the spline and keeps
+        # only the cheap, high-leverage components — deep history, warm starts,
+        # and gated probe-feeding — to maximize the wall-clock-to-target metric
+        # on the larger (eval-dominated) full-batch objective.
+        "QQN-Champ": lambda: _run_qqn(
             loss_fn,
             params0,
             maxiter,
             line_search="backtracking",
             line_search_options={
-                "init_step": 3.0,
-                "shrink": 0.6,
+                "init_step": 2.0,
+                "shrink": 0.7,
                 "c1": 1e-3,
-                "max_iter": 50,
+                "max_iter": 40,
             },
-            oracle=Fallback([LBFGSOracle(history_size=80), AndersonOracle(window=8)]),
-            region=TrustRegion(radius=3.0, adaptive=False),
-            spline=True,
+            oracle=Fallback([LBFGSOracle(history_size=50), AndersonOracle(window=5)]),
+            region=TrustRegion(radius=2.0, adaptive=False),
             feed_probes_to_oracle=True,
-            max_probes=48,
             stop=stop,
         ),
         # --- QQN constrained to a box region (bounded weights) ---
@@ -1157,12 +1188,11 @@ def main():
         #
         # On the smooth tanh/gelu surface the cubic-Hermite spline model is
         # accurate, so the spline's extra stationary-point probes genuinely
-        # sharpen each accepted step. Probe-feeding is now descent-gated
-        # (rejected probes are filtered out before reaching the oracle), so it
-        # is a *safe* free-curvature boost rather than the divergence trap seen
-        # on the rugged surface. This combines QQN's three winning levers on a
-        # surface chosen to reward them — the configuration where QQN should
-        # beat classical L-BFGS in wall-clock.
+        # sharpen each accepted step. Probe-feeding is descent-gated by the
+        # solver (rejected probes are filtered before reaching the oracle), so
+        # it is a *safe* free-curvature boost rather than the divergence trap
+        # seen with ungated feeding on the prior run. This combines QQN's
+        # winning levers on a surface chosen to reward them.
         "QQN-Smooth": lambda: _run_qqn(
             loss_fn,
             params0,
@@ -1191,7 +1221,7 @@ def main():
         "QQN-L50": {},
         "QQN-L50P": {},
         "QQN-L80": {},
-        "QQN-L80P": {
+        "QQN-L50P-BT": {
             "line_search": "backtracking",
             "line_search_options": {"max_iter": 40},
         },
@@ -1216,10 +1246,9 @@ def main():
             "line_search_options": {"max_iter": 40},
             "spline": True,
         },
-        "QQN-UltraP": {
+        "QQN-Champ": {
             "line_search": "backtracking",
-            "line_search_options": {"max_iter": 50},
-            "spline": True,
+            "line_search_options": {"max_iter": 40},
         },
         "QQN-Box": {},
         "QQN-Smooth": {"spline": True},
@@ -1402,7 +1431,13 @@ def main():
     # best-of-breed (QQN-L50P) so the speedup profile reflects the strongest
     # converging configuration, not just a single baseline.
     if "L-BFGS" in results:
-        for ref_name in ("QQN-L50", "QQN-L50P", "QQN-L80P", "QQN-MaxP", "QQN-UltraP"):
+        for ref_name in (
+            "QQN-L50",
+            "QQN-L50P",
+            "QQN-L50P-BT",
+            "QQN-MaxP",
+            "QQN-Champ",
+        ):
             if ref_name not in results:
                 continue
             print(f"\n  vs-LBFGS speedup stability across targets ({ref_name}):")

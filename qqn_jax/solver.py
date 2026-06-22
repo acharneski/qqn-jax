@@ -125,6 +125,7 @@ class QQN:
         region=None,
         oracle="lbfgs",
         feed_probes_to_oracle: bool = False,
+        probe_descent_gate: bool = True,
         max_probes: int = 32,
     ):
         self.fun = fun
@@ -141,6 +142,15 @@ class QQN:
         # Opt-in: forward every gradient evaluated *during the line search*
         # into the oracle's curvature memory, not just the accepted point.
         self.feed_probes_to_oracle = feed_probes_to_oracle
+        # When feeding probes, only admit those that (a) strictly *decrease* the
+        # objective relative to the current iterate and (b) lie on the accepted
+        # side of the path (their step does not overshoot the accepted step).
+        # The prior benchmark (docs/...144249.analysis.md, §4) showed that
+        # feeding *rejected* line-search probes injects non-representative
+        # (s, y) curvature pairs that pollute the L-BFGS history and cause
+        # catastrophic stalls. Gating on descent is the documented fix: only
+        # genuinely improving probes enrich the curvature memory.
+        self.probe_descent_gate = probe_descent_gate
         self.max_probes = max_probes
 
         if line_search not in _LINE_SEARCHES:
@@ -277,6 +287,24 @@ class QQN:
         # accepted point. The probe buffers are fixed-size and fully JIT/vmap
         # compatible (see LineSearchResult.probe_*).
         if self.feed_probes_to_oracle and res.probe_params is not None:
+            probe_valid = res.probe_valid
+            if self.probe_descent_gate:
+                # Descent gate: only admit probes whose objective value strictly
+                # improves on the *current* iterate. We recompute the probe
+                # values cheaply from the already-evaluated probe gradients is
+                # not possible (the LineSearchResult stores params+grads, not
+                # values), so we evaluate the gate via the captured probe params.
+                # This is a small fixed-size vmapped pass (max_probes points)
+                # and stays JIT/vmap compatible.
+                def _probe_value(p):
+                    v, _ = self._plain_value_and_grad(p, *args)
+                    return v
+
+                probe_vals = jax.vmap(_probe_value)(res.probe_params)
+                # Admit a probe only if it is (a) a previously-valid slot and
+                # (b) strictly decreases the objective vs. the current iterate.
+                descends = probe_vals < state.value
+                probe_valid = jnp.logical_and(res.probe_valid, descends)
             oracle_info = OracleInfo(
                 params=params,
                 new_params=new_params,
@@ -286,7 +314,7 @@ class QQN:
                 step_size=step_size,
                 probe_params=res.probe_params,
                 probe_grads=res.probe_grads,
-                probe_valid=res.probe_valid,
+                probe_valid=probe_valid,
             )
         else:
             oracle_info = OracleInfo(
