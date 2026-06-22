@@ -22,6 +22,7 @@ from qqn_jax.lbfgs import (
     init_lbfgs_state,
     lbfgs_direction,
     update_lbfgs_history,
+    update_lbfgs_history_batch,
 )
 from qqn_jax.utils import tree_negative
 
@@ -51,6 +52,9 @@ class OracleInfo(NamedTuple):
         new_grad: gradient ``∇f(x_new)`` after the step.
         t: chosen interpolation parameter.
         step_size: accepted step size ``α``.
+         probe_params: optional ``(k, n)`` buffer of line-search probe points.
+         probe_grads: optional ``(k, n)`` buffer of probe gradients.
+         probe_valid: optional ``(k,)`` boolean mask of filled probe slots.
     """
 
     params: Any = None
@@ -59,6 +63,9 @@ class OracleInfo(NamedTuple):
     new_grad: Any = None
     t: Any = None
     step_size: Any = None
+    probe_params: Any = None
+    probe_grads: Any = None
+    probe_valid: Any = None
 
 
 # --- L-BFGS Oracle (default) ------------------------------------------
@@ -82,7 +89,23 @@ def LBFGSOracle(history_size: int = 10) -> Oracle:
         return d, state
 
     def update(state, info):
-        return update_lbfgs_history(state, info.new_params, info.new_grad, history_size)
+        # When line-search probes are supplied, replay them oldest-first so
+        # every gradient evaluated along the path contributes curvature, then
+        # finish with the accepted point as the newest pair. Otherwise fall
+        # back to the single-pair update (byte-for-byte legacy behavior).
+        if info.probe_params is None:
+            return update_lbfgs_history(
+                state, info.new_params, info.new_grad, history_size
+            )
+        # Append the accepted point as the final (newest) probe.
+        params_seq = jnp.concatenate(
+            [info.probe_params, info.new_params[None, :]], axis=0
+        )
+        grad_seq = jnp.concatenate([info.probe_grads, info.new_grad[None, :]], axis=0)
+        valid_seq = jnp.concatenate([info.probe_valid, jnp.asarray([True])], axis=0)
+        return update_lbfgs_history_batch(
+            state, params_seq, grad_seq, valid_seq, history_size
+        )
 
     return Oracle(init=init, direction=direction, update=update)
 

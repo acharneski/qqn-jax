@@ -30,6 +30,10 @@ class LineSearchResult(NamedTuple):
         new_grad: gradient at ``params + α·d``.
         new_params: the updated parameters.
         done: whether the search satisfied its conditions.
+         probe_params: fixed-size ``(max_probes, n)`` buffer of evaluated
+             points along the path (for feeding oracle curvature memory).
+         probe_grads: fixed-size ``(max_probes, n)`` buffer of probe gradients.
+         probe_valid: fixed-size ``(max_probes,)`` boolean mask of filled slots.
     """
 
     step_size: jnp.ndarray
@@ -37,6 +41,29 @@ class LineSearchResult(NamedTuple):
     new_grad: jnp.ndarray
     new_params: jnp.ndarray
     done: jnp.ndarray
+    probe_params: jnp.ndarray = None
+    probe_grads: jnp.ndarray = None
+    probe_valid: jnp.ndarray = None
+
+
+def _empty_probes(params, max_probes):
+    """Allocate empty probe buffers shaped for ``params`` (a flat vector)."""
+    n = params.shape[0]
+    return (
+        jnp.zeros((max_probes, n), dtype=params.dtype),
+        jnp.zeros((max_probes, n), dtype=params.dtype),
+        jnp.zeros((max_probes,), dtype=bool),
+    )
+
+
+def _record_probe(probe_params, probe_grads, probe_valid, slot, p, g, max_probes):
+    """Write ``(p, g)`` into ``slot`` of the probe buffers (JIT-safe)."""
+    in_range = jnp.logical_and(slot >= 0, slot < max_probes)
+    idx = jnp.clip(slot, 0, max_probes - 1)
+    new_params = jnp.where(in_range, probe_params.at[idx].set(p), probe_params)
+    new_grads = jnp.where(in_range, probe_grads.at[idx].set(g), probe_grads)
+    new_valid = jnp.where(in_range, probe_valid.at[idx].set(True), probe_valid)
+    return new_params, new_grads, new_valid
 
 
 def _make_projected_point(region, region_state, params):
@@ -65,6 +92,7 @@ def backtracking_search(
     max_iter: int = 5,
     region=None,
     region_state=None,
+    max_probes: int = 32,
 ) -> LineSearchResult:
     """Backtracking line search (Armijo), self-contained for Optax.
 
@@ -86,22 +114,50 @@ def backtracking_search(
         val, g = value_and_grad_fn(projected, *args)
         return projected, val, g
 
+    init_pp, init_pg, init_pv = _empty_probes(params, max_probes)
+
     def cond(carry):
-        alpha, i, val, _g, _p = carry
+        alpha, i, val, _g, _p, _pp, _pg, _pv = carry
         armijo = val <= value + c1 * alpha * dg
         return jnp.logical_and(jnp.logical_not(armijo), i < max_iter)
 
     def body(carry):
-        alpha, i, _val, _g, _p = carry
+        alpha, i, _val, _g, _p, pp, pg, pv = carry
         alpha = alpha * shrink
         new_params, new_val, new_g = eval_at(alpha)
-        return alpha, i + 1, new_val, new_g, new_params
+        # Record this probe (slot = i, since slot 0 holds the init_step probe).
+        pp, pg, pv = _record_probe(pp, pg, pv, i, new_params, new_g, max_probes)
+        return alpha, i + 1, new_val, new_g, new_params, pp, pg, pv
 
     # Evaluate at the initial step first.
     init_params, init_val, init_g = eval_at(init_step)
+    # Slot 0 records the initial-step probe.
+    init_pp, init_pg, init_pv = _record_probe(
+        init_pp, init_pg, init_pv, 0, init_params, init_g, max_probes
+    )
 
-    alpha, _i, final_val, final_g, new_params = jax.lax.while_loop(
-        cond, body, (init_step, jnp.asarray(0), init_val, init_g, init_params)
+    (
+        alpha,
+        _i,
+        final_val,
+        final_g,
+        new_params,
+        probe_params,
+        probe_grads,
+        probe_valid,
+    ) = jax.lax.while_loop(
+        cond,
+        body,
+        (
+            init_step,
+            jnp.asarray(1),
+            init_val,
+            init_g,
+            init_params,
+            init_pp,
+            init_pg,
+            init_pv,
+        ),
     )
     armijo = final_val <= value + c1 * alpha * dg
     return LineSearchResult(
@@ -110,6 +166,9 @@ def backtracking_search(
         new_grad=final_g,
         new_params=new_params,
         done=armijo,
+        probe_params=probe_params,
+        probe_grads=probe_grads,
+        probe_valid=probe_valid,
     )
 
 
@@ -125,6 +184,7 @@ def strong_wolfe_search(
     max_iter: int = 10,
     region=None,
     region_state=None,
+    max_probes: int = 32,
 ) -> LineSearchResult:
     """Strong Wolfe line search via Optax ``scale_by_zoom_linesearch``.
 
@@ -176,6 +236,12 @@ def strong_wolfe_search(
         tree_vdot(scaled_updates, direction) / d_norm_sq,
         jnp.asarray(0.0, dtype=new_value.dtype),
     )
+    # Optax's zoom search hides its intermediate probes; expose the single
+    # accepted point as a probe so the oracle still benefits.
+    probe_params, probe_grads, probe_valid = _empty_probes(params, max_probes)
+    probe_params, probe_grads, probe_valid = _record_probe(
+        probe_params, probe_grads, probe_valid, 0, new_params, new_grad, max_probes
+    )
 
     return LineSearchResult(
         step_size=step_size,
@@ -183,6 +249,9 @@ def strong_wolfe_search(
         new_grad=new_grad,
         new_params=new_params,
         done=new_value < value,
+        probe_params=probe_params,
+        probe_grads=probe_grads,
+        probe_valid=probe_valid,
     )
 
 
@@ -196,6 +265,7 @@ def fixed_step_search(
     step_size: float = 1.0,
     region=None,
     region_state=None,
+    max_probes: int = 32,
 ) -> LineSearchResult:
     """Trivial line search using a constant step size.
     Useful for debugging, benchmarking against a baseline, or when the
@@ -207,12 +277,19 @@ def fixed_step_search(
     raw_params = tree_add_scaled(params, alpha, direction)
     new_params = region.project(params, raw_params, region_state)
     new_val, new_g = value_and_grad_fn(new_params, *args)
+    probe_params, probe_grads, probe_valid = _empty_probes(params, max_probes)
+    probe_params, probe_grads, probe_valid = _record_probe(
+        probe_params, probe_grads, probe_valid, 0, new_params, new_g, max_probes
+    )
     return LineSearchResult(
         step_size=alpha,
         new_value=new_val,
         new_grad=new_g,
         new_params=new_params,
         done=jnp.asarray(True),
+        probe_params=probe_params,
+        probe_grads=probe_grads,
+        probe_valid=probe_valid,
     )
 
 
@@ -229,6 +306,7 @@ def armijo_search(
     max_iter: int = 30,
     region=None,
     region_state=None,
+    max_probes: int = 32,
 ) -> LineSearchResult:
     """Alias for :func:`backtracking_search`.
     Provided so users can refer to the Armijo backtracking search by its
@@ -247,6 +325,7 @@ def armijo_search(
         max_iter=max_iter,
         region=region,
         region_state=region_state,
+        max_probes=max_probes,
     )
 
 
@@ -261,6 +340,7 @@ def hager_zhang_search(
     max_iter: int = 30,
     region=None,
     region_state=None,
+    max_probes: int = 32,
 ) -> LineSearchResult:
     """Hager-Zhang line search via Optax ``scale_by_backtracking_linesearch``.
     The Hager-Zhang scheme is a robust approximate-Wolfe line search. We use
@@ -299,10 +379,17 @@ def hager_zhang_search(
         tree_vdot(scaled_updates, direction) / d_norm_sq,
         jnp.asarray(0.0, dtype=new_value.dtype),
     )
+    probe_params, probe_grads, probe_valid = _empty_probes(params, max_probes)
+    probe_params, probe_grads, probe_valid = _record_probe(
+        probe_params, probe_grads, probe_valid, 0, new_params, new_grad, max_probes
+    )
     return LineSearchResult(
         step_size=step_size,
         new_value=new_value,
         new_grad=new_grad,
         new_params=new_params,
         done=new_value < value,
+        probe_params=probe_params,
+        probe_grads=probe_grads,
+        probe_valid=probe_valid,
     )

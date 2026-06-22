@@ -607,7 +607,7 @@ def main():
     hidden_sizes = _parse_hidden_sizes()
     # Hidden-layer activation is configurable via the ACTIVATION env var.
     activation_name, activation_fn = _parse_activation()
-    maxiter = 1000
+    maxiter = 100000
 
     # --- Shared, fair termination bounds applied to EVERY optimizer ---
     # The non-convex MLP loss does not descend as far as the linear model

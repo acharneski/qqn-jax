@@ -286,12 +286,19 @@ def spline_wrap(inner_search: Callable) -> Callable:
         # The spline only ever *improves* on the inner result, so the
         # acceptance status is at least as good as the inner search's.
         done = jnp.logical_or(inner.done, fv < inner.new_value)
+        # Carry the inner search's probes forward so intra-search evaluations
+        # still feed the oracle. (The spline's own probes are not threaded
+        # through the fixed-size buffer here; the inner probes already cover
+        # the path, and the accepted point is appended by the oracle update.)
         return LineSearchResult(
             step_size=fa,
             new_value=fv,
             new_grad=fg,
             new_params=fp,
             done=done,
+            probe_params=inner.probe_params,
+            probe_grads=inner.probe_grads,
+            probe_valid=inner.probe_valid,
         )
 
     return wrapped

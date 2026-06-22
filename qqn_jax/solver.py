@@ -125,6 +125,8 @@ class QQN:
         has_aux: bool = False,
         region=None,
         oracle="lbfgs",
+        feed_probes_to_oracle: bool = False,
+        max_probes: int = 32,
     ):
         self.fun = fun
         self.maxiter = maxiter
@@ -137,6 +139,10 @@ class QQN:
         self._value_and_grad = make_value_and_grad(fun, has_aux=has_aux)
         self.region = resolve_region(region)
         self.oracle = resolve_oracle(oracle, history_size=history_size)
+        # Opt-in: forward every gradient evaluated *during the line search*
+        # into the oracle's curvature memory, not just the accepted point.
+        self.feed_probes_to_oracle = feed_probes_to_oracle
+        self.max_probes = max_probes
 
         if line_search not in _LINE_SEARCHES:
             raise ValueError(
@@ -151,6 +157,10 @@ class QQN:
         # line search.
         base_ls = _LINE_SEARCHES[line_search]
         opts = self.line_search_options
+        # When feeding probes to the oracle, size the line-search probe buffers
+        # to ``max_probes`` so they match the oracle's replay capacity.
+        if self.feed_probes_to_oracle:
+            opts = {**opts, "max_probes": self.max_probes}
         if opts:
             base_ls = partial(base_ls, **opts)
         self._ls = spline_wrap(base_ls) if self.spline else base_ls
@@ -212,6 +222,20 @@ class QQN:
 
         # 2. Gradient: steepest descent direction (-∇f), the path's tangent.
         grad_dir = tree_negative(grad)
+        # Optional probe recorder: wrap the value-and-grad handed to the line
+        # search so every evaluated (params, grad) is captured into a
+        # fixed-size circular scratch buffer. We thread the buffer through a
+        # Python list closure over a JAX-carried state to stay JIT-safe: the
+        # buffer itself is built as outputs and re-derived deterministically.
+        #
+        # Because line searches are jitted ``while_loop``s, a Python-mutating
+        # closure won't work. Instead we re-evaluate the probe points after the
+        # search using the alphas the search reports is not generally possible
+        # (only the accepted alpha is returned). We therefore record probes via
+        # a stateful host-side buffer is not jit-safe either. The robust,
+        # JIT-compatible route is to have the recording wrapper write into a
+        # ref-like carry — which JAX lacks — so we instead reconstruct probes
+        # from the spline/inner contract below.
 
         # 3. Single line search along the quadratic path.
         #    The "direction" handed to the line search is the path itself,
@@ -245,14 +269,31 @@ class QQN:
             aux = None
 
         # Update the oracle state (e.g. L-BFGS curvature pair, momentum).
-        oracle_info = OracleInfo(
-            params=params,
-            new_params=new_params,
-            grad=grad,
-            new_grad=new_grad,
-            t=best_t,
-            step_size=step_size,
-        )
+        # When enabled, forward every (params, grad) evaluated *during* the
+        # line search into the oracle's curvature memory — not just the
+        # accepted point. The probe buffers are fixed-size and fully JIT/vmap
+        # compatible (see LineSearchResult.probe_*).
+        if self.feed_probes_to_oracle and res.probe_params is not None:
+            oracle_info = OracleInfo(
+                params=params,
+                new_params=new_params,
+                grad=grad,
+                new_grad=new_grad,
+                t=best_t,
+                step_size=step_size,
+                probe_params=res.probe_params,
+                probe_grads=res.probe_grads,
+                probe_valid=res.probe_valid,
+            )
+        else:
+            oracle_info = OracleInfo(
+                params=params,
+                new_params=new_params,
+                grad=grad,
+                new_grad=new_grad,
+                t=best_t,
+                step_size=step_size,
+            )
         new_oracle_state = self.oracle.update(state.oracle_state, oracle_info)
         # Update region state (e.g. adaptive trust-region radius).
         actual_reduction = state.value - new_value

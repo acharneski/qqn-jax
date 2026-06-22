@@ -16,6 +16,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from functools import partial
 
 
 class LBFGSState(NamedTuple):
@@ -118,6 +119,44 @@ def update_lbfgs_history(
         prev_params=params,
         prev_grad=grad,
     )
+
+
+def update_lbfgs_history_batch(
+    state: LBFGSState,
+    params_seq,
+    grad_seq,
+    valid_seq,
+    history_size: int,
+) -> LBFGSState:
+    """Replay a sequence of (params, grad) probes into the history.
+    ``params_seq``/``grad_seq`` have shape ``(k, n)`` and ``valid_seq`` has
+    shape ``(k,)``. Probes are folded in *oldest-first* so the most recent
+    accepted point ends up newest. Invalid (unfilled scratch) slots are
+    skipped via the curvature guard already in ``update_lbfgs_history``.
+    We use ``lax.scan`` so this stays JIT/vmap compatible. The curvature
+    condition inside ``update_lbfgs_history`` (yᵀs > eps) automatically
+    rejects degenerate or zero-length pairs.
+    """
+
+    def step(carry_state, inputs):
+        p, g, ok = inputs
+        updated = update_lbfgs_history(carry_state, p, g, history_size)
+        # Honor the per-probe validity flag (e.g. unused scratch slots): when
+        # ``ok`` is False, keep the histories/gamma but still advance prev_*
+        # so subsequent (s, y) differences anchor on the latest real probe.
+        merged = LBFGSState(
+            s_history=jnp.where(ok, updated.s_history, carry_state.s_history),
+            y_history=jnp.where(ok, updated.y_history, carry_state.y_history),
+            rho_history=jnp.where(ok, updated.rho_history, carry_state.rho_history),
+            count=jnp.where(ok, updated.count, carry_state.count),
+            gamma=jnp.where(ok, updated.gamma, carry_state.gamma),
+            prev_params=jnp.where(ok, updated.prev_params, carry_state.prev_params),
+            prev_grad=jnp.where(ok, updated.prev_grad, carry_state.prev_grad),
+        )
+        return merged, None
+
+    new_state, _ = jax.lax.scan(step, state, (params_seq, grad_seq, valid_seq))
+    return new_state
 
 
 def lbfgs_direction(state: LBFGSState, grad) -> jnp.ndarray:
