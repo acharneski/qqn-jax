@@ -909,18 +909,18 @@ def main():
         # value evaluation); a clean per-step cost metric for fair comparison.
         n_iters = max(len(history) - 1, 1)
         ms_per_iter = (wall / n_iters) * 1e3
-    # Trajectory AUC: a single scalar summarizing *both* early- and late-phase
-    # descent speed. We integrate log10(loss) over the (normalized) iteration
-    # axis via the trapezoid rule; lower AUC means the optimizer spent its
-    # whole trajectory at lower loss, which is far more discriminating than a
-    # single time-to-target (it rewards fast early descent AND deep late
-    # refinement simultaneously, without favouring either phase).
-    log_hist = np.log10(np.maximum(np.asarray(history), 1e-12))
-    if len(log_hist) > 1:
-        x_axis = np.linspace(0.0, 1.0, len(log_hist))
-        traj_auc = float(np.trapz(log_hist, x_axis))
-    else:
-        traj_auc = float(log_hist[-1])
+        # Trajectory AUC: a single scalar summarizing *both* early- and
+        # late-phase descent speed. We integrate log10(loss) over the
+        # (normalized) iteration axis via the trapezoid rule; lower AUC means
+        # the optimizer spent its whole trajectory at lower loss, which is far
+        # more discriminating than a single time-to-target (it rewards fast
+        # early descent AND deep late refinement simultaneously).
+        log_hist = np.log10(np.maximum(np.asarray(history), 1e-12))
+        if len(log_hist) > 1:
+            x_axis = np.linspace(0.0, 1.0, len(log_hist))
+            traj_auc = float(np.trapezoid(log_hist, x_axis))
+        else:
+            traj_auc = float(log_hist[-1])
         results[name] = {
             "final_loss": history[-1],
             "best_loss": min(history),
