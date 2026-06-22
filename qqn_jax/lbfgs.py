@@ -89,7 +89,12 @@ def update_lbfgs_history(
         jnp.roll(state.y_history, shift=1, axis=0).at[0].set(y),
         state.y_history,
     )
-    rho = jnp.where(valid, 1.0 / ys, 0.0)
+    # Guard the reciprocal: jnp.where evaluates BOTH branches, so a raw
+    # ``1.0 / ys`` produces inf/NaN when ys ≤ 0 even though it is masked out.
+    # Under jax.grad that NaN backpropagates through the non-selected branch
+    # and poisons the gradient. Compute on a safe denominator first.
+    safe_ys = jnp.where(valid, ys, jnp.ones_like(ys))
+    rho = jnp.where(valid, 1.0 / safe_ys, 0.0)
     new_rho = jnp.where(
         valid,
         jnp.roll(state.rho_history, shift=1, axis=0).at[0].set(rho),
@@ -100,7 +105,9 @@ def update_lbfgs_history(
         jnp.minimum(state.count + 1, history_size),
         state.count,
     )
-    new_gamma = jnp.where(valid, ys / yy, state.gamma)
+    # Same NaN-safety for the initial-Hessian scale γ = ⟨y,s⟩/⟨y,y⟩.
+    safe_yy = jnp.where(yy > 0.0, yy, jnp.ones_like(yy))
+    new_gamma = jnp.where(valid, ys / safe_yy, state.gamma)
 
     return LBFGSState(
         s_history=new_s,

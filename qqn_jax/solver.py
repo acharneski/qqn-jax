@@ -258,43 +258,27 @@ class QQN:
         new_oracle_state = self.oracle.update(state.oracle_state, oracle_info)
         # Update region state (e.g. adaptive trust-region radius).
         actual_reduction = state.value - new_value
-        # Honest predicted reduction from the along-path linear model:
-        #   pred ≈ -⟨∇f, d(t)⟩, the first-order decrease Armijo itself uses.
-        #   d(t) = t(1-t)·grad_dir + t²·qn_dir, so this is exact to first order
-        #   in the realized step and gives the trust-region a *real* ρ ≠ 1.
+        # Honest predicted reduction from the along-path quadratic model.
+        #
+        # The QQN quadratic path has the *exact* directional model
+        #   slope(τ) = ⟨∇f, d'(τ)⟩ = (1-2τ)·m_g + 2τ·m_q,
+        # whose integral gives the model's reduction in closed form:
+        #   pred(t) = -∫₀ᵗ slope(τ) dτ = -[(t - t²)·m_g + t²·m_q].
+        # Crucially, this integral is *identically* −⟨∇f, d(t)⟩ because
+        # d(t) = t(1-t)·grad_dir + t²·qn_dir. There is therefore NO separate
+        # curvature term to add: the path's curvature is already fully encoded
+        # in d(t). The previous code added a spurious second-order term and a
+        # deflating floor, which double-counted curvature and drove ρ negative
+        # near convergence — the documented adaptive trust-region stall. We
+        # now use the geometrically exact along-path model directly.
         step_dir = quadratic_path(best_t, grad_dir, qn_dir)
-        # Second-order-aware predicted reduction. The linear term alone lies to
-        # a *curved* step and drives the adaptive radius to over-shrink. We add
-        # the curvature term implied by the oracle without forming any Hessian:
-        # along the path, the curvature contribution is captured by the change
-        # in directional slope between the two anchors (t=0 and the oracle).
-        # m0 = ⟨∇f, d'(0)⟩ = ⟨∇f, grad_dir⟩ (the pure-gradient slope);
-        # the oracle endpoint contributes ⟨∇f, qn_dir⟩. The quadratic model's
-        # reduction is the trapezoidal integral of the (linear-in-t) slope:
-        #   pred(t) = -∫₀ᵗ ⟨∇f, d'(τ)⟩ dτ
-        #           = -[ t(1-t/2)·m_g + (t²/... )·m_q ] (closed form below).
-        linear_term = -tree_vdot(grad, step_dir)
-        m_g = tree_vdot(grad, grad_dir)  # ⟨∇f, -∇f⟩ = -‖∇f‖² ≤ 0
-        m_q = tree_vdot(grad, qn_dir)  # ⟨∇f, -H∇f⟩, the oracle slope
-        # Exact integral of the slope ⟨∇f, d'(τ)⟩ = (1-2τ)·m_g + 2τ·m_q:
-        #   ∫₀ᵗ = (t - t²)·m_g + t²·m_q  (== linear_term's negative, by design)
-        # The *curvature correction* is the deviation of the realized fitness
-        # from this linear-slope model; we fold a half-curvature term so ρ is
-        # honest to second order along the curve.
-        curv_term = 0.5 * (best_t**2) * (m_q - m_g)
-        raw_pred = linear_term - curv_term
-        # Esoteric correction: the trust-region ratio ρ = ared/pred is only
-        # meaningful for a *positive* predicted reduction. Near convergence the
-        # curvature correction can flip raw_pred negative, inverting ρ's sign
-        # and driving the adaptive radius to shrink exactly when it should not.
-        # We floor the predicted reduction at the honest first-order model,
-        # which is non-negative whenever the step descends along the path.
-        # KNOWN ISSUE: this floor (1e-3·|linear_term|) deflates ρ near
-        # convergence and is a contributing factor to the documented adaptive
-        # trust-region stall on deep-memory stacks (see docs/results.md).
-        # Do not treat the adaptive TR as production-ready until this is
-        # reconciled with the chord/arc-length mismatch in regions.py.
-        pred_reduction = jnp.maximum(raw_pred, jnp.abs(linear_term) * 1e-3)
+        # pred(t) = −⟨∇f, d(t)⟩, exact for the quadratic model.
+        pred_reduction = -tree_vdot(grad, step_dir)
+        # The model reduction is non-negative whenever the step descends along
+        # the path (which the line search guarantees via sufficient decrease).
+        # A tiny positive epsilon avoids a 0/0 ρ when the step is degenerate.
+        eps_pred = jnp.asarray(1e-16, dtype=pred_reduction.dtype)
+        pred_reduction = jnp.maximum(pred_reduction, eps_pred)
         info = RegionInfo(
             params=params,
             new_params=new_params,
@@ -306,6 +290,11 @@ class QQN:
         new_region_state = self.region.update(state.region_state, info)
 
         error = tree_l2_norm(new_grad)
+        # Terminate (rather than spin to maxiter) if the iterate diverges to a
+        # non-finite state — a single bad start in a vmap batch otherwise wastes
+        # the whole batch's remaining iterations on NaN arithmetic.
+        finite = jnp.logical_and(jnp.isfinite(new_value), jnp.isfinite(error))
+        done = jnp.logical_or(error <= self.tol, jnp.logical_not(finite))
         new_state = QQNState(
             iter=state.iter + 1,
             value=new_value,
@@ -313,7 +302,7 @@ class QQN:
             oracle_state=new_oracle_state,
             step_size=step_size,
             error=error,
-            done=error <= self.tol,
+            done=done,
             aux=aux,
             region_state=new_region_state,
         )

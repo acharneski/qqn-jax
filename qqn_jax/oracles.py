@@ -326,6 +326,10 @@ def AndersonOracle(window: int = 5, reg: float = 1e-8, beta: float = 1.0) -> Ora
         A = jnp.where(
             active[:, None] & active[None, :], A, jnp.eye(m, dtype=grad.dtype)
         )
+        # Always-on diagonal floor: even after masking, a degenerate window can
+        # leave A near-singular, making solve() emit NaN that backprops through
+        # the downstream safeguard. A small absolute ridge guarantees SPD-ness.
+        A = A + jnp.asarray(1e-12, dtype=grad.dtype) * jnp.eye(m, dtype=grad.dtype)
         theta = jnp.linalg.solve(A, b)
         theta = jnp.where(active, theta, 0.0)
 

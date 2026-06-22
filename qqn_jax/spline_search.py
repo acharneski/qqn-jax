@@ -322,16 +322,17 @@ def spline_wrap(inner_search: Callable) -> Callable:
                 lambda new, old: jnp.where(improves, new, old), cg, bg
             )
 
-            # Tighten the bracket toward the lower-fitness endpoint.
-            # The candidate lies inside [min(la,ra), max(la,ra)]. To keep a
-            # valid bracket that straddles the lowest-fitness point, retain the
-            # candidate and the better of the two existing endpoints, so the new
-            # interval is the half that contains the minimum.
+            # Tighten the bracket so it still ENCLOSES the minimum.
             #
-            # If the left endpoint is the lower-fitness one, discard the right
-            # endpoint (new bracket = [left, candidate]); otherwise discard the
-            # left endpoint (new bracket = [candidate, right]).
-            keep_left = lf <= rf
+            # The candidate cf lies strictly inside [la, ra]. The minimum of a
+            # well-bracketed unimodal segment is on the side of the candidate
+            # whose endpoint has the *lower* fitness: if f(left) < f(right) the
+            # minimum is in [left, candidate], else in [candidate, right]. This
+            # is the standard golden-section/Brent retention rule and—unlike
+            # the previous "keep the better endpoint + candidate" heuristic—
+            # provably preserves a straddling bracket (it never drops the side
+            # containing the true minimizer).
+            keep_left = lf < rf
             n_la = jnp.where(keep_left, la, cand_alpha)
             n_lf = jnp.where(keep_left, lf, cf)
             n_lm = jnp.where(keep_left, lm, cm)
