@@ -130,7 +130,6 @@ from qqn_jax.regions import (
     TrustRegion,
 )
 
-
 # --------------------------------------------------------------------------
 # Install hint (shown when no real dataset backend is available)
 # --------------------------------------------------------------------------
@@ -543,6 +542,56 @@ def _parse_hidden_sizes():
 
 
 # --------------------------------------------------------------------------
+# Generic environment-variable parsing helpers
+#
+# Every major numeric / list parameter of the experiment is overridable via an
+# environment variable so the headline run can be re-tuned without editing the
+# source. Each helper validates its input and falls back to the documented
+# default (with a warning) on malformed values.
+# --------------------------------------------------------------------------
+def _env_float(name, default):
+    """Parse a float environment variable, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[config] Invalid {name}={raw!r}; using default {default}.")
+        return default
+
+
+def _env_int(name, default):
+    """Parse an int environment variable, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[config] Invalid {name}={raw!r}; using default {default}.")
+        return default
+
+
+def _env_float_list(name, default):
+    """Parse a comma-separated float list env var, falling back to ``default``.
+    ``default`` should be a tuple/list of floats. An empty/unset variable
+    returns the default; a malformed entry triggers a warning and the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return tuple(default)
+    try:
+        vals = tuple(float(tok) for tok in raw.split(",") if tok.strip() != "")
+        if not vals:
+            raise ValueError("empty list")
+        return vals
+    except ValueError as exc:
+        print(f"[config] Invalid {name}={raw!r} ({exc}); using default {default}.")
+        return tuple(default)
+
+
+# --------------------------------------------------------------------------
 # Optimizer runners (shared termination logic)
 # --------------------------------------------------------------------------
 
@@ -569,11 +618,6 @@ def _update_milestones(milestones, hit, value, it, now, evals=None):
     for m in milestones:
         if hit.get(m) is None and value <= m:
             hit[m] = (it, now, evals)
-
-
-def _grad_norm(loss_fn, params):
-    g = jax.grad(loss_fn)(params)
-    return float(jnp.linalg.norm(g))
 
 
 # --------------------------------------------------------------------------
@@ -611,11 +655,12 @@ class EvalCounter:
 def _estimate_evals_per_iter(method, qqn_kwargs=None):
     """Heuristic evaluation multiplicity per accepted iteration.
 
-    These are conservative analytic estimates derived from each method's
-    inner loop, used to translate iterations-to-target into a cost-aware
-    *evals-to-target* figure. They are explicitly approximate (see the
-    metric caveat in ``docs/results.md``) but make cross-method cost
-    comparisons far fairer than raw iteration counts.
+    NOTE: This is now a FALLBACK / DISPLAY-ONLY estimate. The headline
+    cost-aware results use the GENUINE evaluation counts reported by the
+    solver (``QQNState.num_evals``) and the real Optax line-search probe
+    counts — see the runners. This heuristic is retained only to populate
+    the per-iteration display column for variants that never reached the
+    target (and thus have no measured evals-to-target).
 
     - First-order (SGD/Adam): 1 value + 1 grad per step.
     - L-BFGS (Optax zoom): ~1 value/grad per step + ~a few line-search probes.
@@ -658,19 +703,23 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
     gtol = stop.get("gtol")
     time_budget = stop.get("time_budget")
     milestones = stop.get("milestones", ())
-    # Estimated evaluations per accepted iteration, used to attach a
-    # cost-aware (evals) figure to every milestone crossing.
-    evals_per_iter = _estimate_evals_per_iter("QQN", qqn_kwargs)
 
     solver = QQN(loss_fn, maxiter=maxiter, **qqn_kwargs)
     state = solver.init_state(params0)
     params = params0
     history = [float(state.value)]
     times = [0.0]
+    # The solver tracks the TRUE cumulative evaluation count in
+    # ``state.num_evals`` (line-search probes, spline probes, recovery evals,
+    # plus the single init_state eval). We record it per-iteration instead of
+    # using a coarse per-iteration heuristic — this is the genuine work done.
+    eval_counts = [int(state.num_evals)]
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
-    _update_milestones(milestones, milestone_hits, history[-1], 0, 0.0, 0)
+    _update_milestones(
+        milestones, milestone_hits, history[-1], 0, 0.0, int(state.num_evals)
+    )
     t0 = time.perf_counter()
     update = jax.jit(solver.update)
     for it in range(maxiter):
@@ -678,14 +727,19 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
         history.append(float(state.value))
         now = time.perf_counter() - t0
         times.append(now)
-        gnorm = _grad_norm(loss_fn, params)
+        # ``state.error`` is the gradient L2 norm at the accepted point,
+        # already computed inside ``update`` — no extra (uncounted) gradient
+        # evaluation is needed for the convergence test.
+        gnorm = float(state.error)
+        cum_evals = int(state.num_evals)
+        eval_counts.append(cum_evals)
         _update_milestones(
             milestones,
             milestone_hits,
             history[-1],
             it + 1,
             now,
-            int(round((it + 1) * evals_per_iter)),
+            cum_evals,
         )
         if iters_to_target is None and _converged(history[-1], gnorm, f_target, gtol):
             iters_to_target = it + 1
@@ -696,6 +750,9 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
         if bool(state.done):
             break
     wall = time.perf_counter() - t0
+    # Attach the real evals-to-target as an extra trailing element so the
+    # caller can use the genuine count rather than re-deriving it.
+    evals_to_target = None if iters_to_target is None else eval_counts[iters_to_target]
     return (
         params,
         history,
@@ -704,6 +761,7 @@ def _run_qqn(loss_fn, params0, maxiter, stop=None, **qqn_kwargs):
         iters_to_target,
         time_to_target,
         milestone_hits,
+        evals_to_target,
     )
 
 
@@ -728,6 +786,8 @@ def run_optax(loss_fn, params0, optimizer, maxiter, stop=None):
     params = params0
     history = [float(loss_fn(params))]
     times = [0.0]
+    # SGD/Adam: exactly one value-and-grad evaluation per accepted step.
+    eval_counts = [0]
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
@@ -738,7 +798,11 @@ def run_optax(loss_fn, params0, optimizer, maxiter, stop=None):
         history.append(float(value))
         now = time.perf_counter() - t0
         times.append(now)
-        _update_milestones(milestones, milestone_hits, history[-1], it + 1, now, it + 1)
+        cum_evals = it + 1  # one value+grad call per step
+        eval_counts.append(cum_evals)
+        _update_milestones(
+            milestones, milestone_hits, history[-1], it + 1, now, cum_evals
+        )
         if iters_to_target is None and _converged(
             history[-1], float(gnorm), f_target, gtol
         ):
@@ -748,6 +812,7 @@ def run_optax(loss_fn, params0, optimizer, maxiter, stop=None):
         if time_budget is not None and now >= time_budget:
             break
     wall = time.perf_counter() - t0
+    evals_to_target = None if iters_to_target is None else eval_counts[iters_to_target]
     return (
         params,
         history,
@@ -756,6 +821,7 @@ def run_optax(loss_fn, params0, optimizer, maxiter, stop=None):
         iters_to_target,
         time_to_target,
         milestone_hits,
+        evals_to_target,
     )
 
 
@@ -766,12 +832,26 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
     gtol = stop.get("gtol")
     time_budget = stop.get("time_budget")
     milestones = stop.get("milestones", ())
-    # L-BFGS issues ~3 evals per accepted step (zoom line-search probes).
-    evals_per_iter = _estimate_evals_per_iter("L-BFGS")
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
     optimizer = optax.lbfgs()
     opt_state = optimizer.init(params0)
+
+    # Optax's zoom line search records the number of line-search steps it
+    # performed in ``opt_state``. Extract it so the eval count reflects the
+    # ACTUAL probes issued each iteration rather than a flat heuristic. Each
+    # zoom step is one value+grad evaluation; plus the one we compute here.
+    def _extract_ls_evals(opt_state):
+        # Walk the (nested) optax state for a ``num_linesearch_steps`` field.
+        for leaf in jax.tree_util.tree_leaves_with_path(opt_state):
+            path, val = leaf
+            name = path[-1].name if path and hasattr(path[-1], "name") else ""
+            if "linesearch" in str(name).lower() and "step" in str(name).lower():
+                try:
+                    return int(val)
+                except Exception:
+                    return None
+        return None
 
     @jax.jit
     def step(params, opt_state):
@@ -790,6 +870,12 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
     params = params0
     history = [float(loss_fn(params))]
     times = [0.0]
+    # Cumulative genuine evaluations: 1 value+grad we compute per step, plus
+    # the zoom line-search probes Optax reports (each a value+grad), when
+    # available. Falls back to a conservative +2 probes/step estimate.
+    eval_counts = [0]
+    cum_evals = 0
+    _ls_unavailable = False
     iters_to_target = None
     time_to_target = None
     milestone_hits = {m: None for m in milestones}
@@ -800,13 +886,22 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
         history.append(float(value))
         now = time.perf_counter() - t0
         times.append(now)
+        # Count this step's evaluations: 1 (our value+grad) + line-search probes.
+        ls_steps = None if _ls_unavailable else _extract_ls_evals(opt_state)
+        if ls_steps is None:
+            _ls_unavailable = True
+            # Conservative fallback: ~2 probes/step in addition to the base call.
+            cum_evals += 3
+        else:
+            cum_evals += 1 + max(ls_steps, 0)
+        eval_counts.append(cum_evals)
         _update_milestones(
             milestones,
             milestone_hits,
             history[-1],
             it + 1,
             now,
-            int(round((it + 1) * evals_per_iter)),
+            cum_evals,
         )
         if iters_to_target is None and _converged(
             history[-1], float(gnorm), f_target, gtol
@@ -817,6 +912,7 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
         if time_budget is not None and now >= time_budget:
             break
     wall = time.perf_counter() - t0
+    evals_to_target = None if iters_to_target is None else eval_counts[iters_to_target]
     return (
         params,
         history,
@@ -825,6 +921,7 @@ def run_optax_lbfgs(loss_fn, params0, maxiter, stop=None):
         iters_to_target,
         time_to_target,
         milestone_hits,
+        evals_to_target,
     )
 
 
@@ -871,7 +968,12 @@ def main():
     # Hidden-layer activation(s) configurable via ACTIVATION env var. May be a
     # single name (uniform) or a comma-separated list to mix per-layer.
     activation_name, activation_fn = _parse_activation(len(hidden_sizes))
-    maxiter = 1000000
+    maxiter = _env_int("MAXITER", 1000000)
+    # L2 regularization strength (full-batch ridge penalty on the flat params).
+    l2 = _env_float("L2", 1e-4)
+    # Baseline first-order learning rates (configurable for re-tuning).
+    sgd_lr = _env_float("SGD_LR", 0.05)
+    adam_lr = _env_float("ADAM_LR", 0.01)
 
     # --- Shared, fair termination bounds applied to EVERY optimizer ---
     # The non-convex MLP loss does not descend as far as the linear model
@@ -888,8 +990,8 @@ def main():
         # reachable for the deep-memory stacks within the budget. The full
         # target_profile below reports the speedup as a curve so this single
         # value is not load-bearing.
-        "f_target": 2.0e-2,
-        "gtol": 1.0e-8,
+        "f_target": _env_float("F_TARGET", 2.0e-2),
+        "gtol": _env_float("GTOL", 1.0e-8),
         # A modestly larger wall-clock cap so the deep-memory QQN stacks (whose
         # per-iteration cost is higher but whose iteration count is far lower)
         # are not prematurely truncated before reaching the tighter target.
@@ -906,8 +1008,8 @@ def main():
         # (looser) 4e-2 target in ~20s, so 150s leaves ample headroom even for
         # the tighter 2e-2 headline target below (the speedup widens
         # monotonically as the target tightens, sharpening QQN's advantage).
-        "time_budget": 150.0,
-        "milestones": (1.0e0, 5.0e-1, 2.0e-1, 1.0e-1),
+        "time_budget": _env_float("TIME_BUDGET", 150.0),
+        "milestones": _env_float_list("MILESTONES", (1.0e0, 5.0e-1, 2.0e-1, 1.0e-1)),
     }
     # --- Target-sensitivity analysis ---
     # Addresses the documented selection-bias caveat: choosing a single
@@ -921,7 +1023,10 @@ def main():
     # The tighter f_target (2e-2) is now the headline; profile down past it so
     # the speedup curve captures the regime where QQN's advantage is largest
     # (it widens monotonically as the target tightens).
-    target_profile = (2.0e-1, 1.0e-1, 6.0e-2, 4.0e-2, 2.0e-2)
+    # Overridable via the ``TARGET_PROFILE`` env var (comma-separated floats).
+    target_profile = _env_float_list(
+        "TARGET_PROFILE", (2.0e-1, 1.0e-1, 6.0e-2, 4.0e-2, 2.0e-2)
+    )
 
     n_hidden_layers = len(hidden_sizes)
     arch_str = "->".join(str(s) for s in (["x"] + hidden_sizes + [n_classes]))
@@ -948,7 +1053,6 @@ def main():
         f"  shared stop: f_target={stop['f_target']:.1e}  "
         f"gtol={stop['gtol']:.1e}  time_budget={stop['time_budget']:.1f}s\n"
     )
-
     xtr, ytr, xte, yte = _load_dataset_numpy(dataset, n_train, n_test, n_classes)
     dim = xtr.shape[1]
 
@@ -958,13 +1062,23 @@ def main():
     y_test = jnp.asarray(yte)
 
     loss_fn = make_loss(
-        X_train, y_train, dim, hidden_sizes, n_classes, activation=activation_fn
+        X_train, y_train, dim, hidden_sizes, n_classes, l2=l2, activation=activation_fn
     )
 
     # Shared initial parameters so every optimizer starts identically.
+    seed = _env_int("SEED", 42)
     params0 = init_params(
-        dim, hidden_sizes, n_classes, jax.random.PRNGKey(42), activation=activation_name
+        dim,
+        hidden_sizes,
+        n_classes,
+        jax.random.PRNGKey(seed),
+        activation=activation_name,
     )
+    print(
+        f"  l2={l2:.1e}  sgd_lr={sgd_lr}  adam_lr={adam_lr}  seed={seed}\n"
+        f"  milestones={stop['milestones']}  target_profile={target_profile}\n"
+    )
+
     n_params = int(params0.shape[0])
     print(f"  model parameters: {n_params}\n")
 
@@ -1296,10 +1410,10 @@ def main():
             stop=stop,
         ),
         "SGD": lambda: run_optax(
-            loss_fn, params0, optax.sgd(learning_rate=0.05), maxiter, stop=stop
+            loss_fn, params0, optax.sgd(learning_rate=sgd_lr), maxiter, stop=stop
         ),
         "Adam": lambda: run_optax(
-            loss_fn, params0, optax.adam(learning_rate=0.01), maxiter, stop=stop
+            loss_fn, params0, optax.adam(learning_rate=adam_lr), maxiter, stop=stop
         ),
         "L-BFGS": lambda: run_optax_lbfgs(loss_fn, params0, maxiter, stop=stop),
     }
@@ -1353,6 +1467,7 @@ def main():
             iters_to_target,
             time_to_target,
             milestone_hits,
+            real_evals_to_target,
         ) = runner()
         train_acc = float(
             accuracy(
@@ -1373,13 +1488,18 @@ def main():
             traj_auc = float(np.trapezoid(log_hist, x_axis))
         else:
             traj_auc = float(log_hist[-1])
-        # Cost-aware unit: estimated function/gradient evaluations to target.
-        evals_per_iter = _estimate_evals_per_iter(name, qqn_kwarg_map.get(name, {}))
-        evals_to_target = (
-            None
-            if iters_to_target is None
-            else int(round(iters_to_target * evals_per_iter))
-        )
+        # Cost-aware unit: GENUINE function/gradient evaluations to target,
+        # taken directly from the solver/runner accounting (state.num_evals for
+        # QQN, real line-search probe counts for L-BFGS, one/step for SGD/Adam).
+        evals_to_target = real_evals_to_target
+        # Derived descriptive figure: average evals per accepted iteration to
+        # the target (purely for display; NOT used to compute evals_to_target).
+        if evals_to_target is not None and iters_to_target:
+            evals_per_iter = evals_to_target / iters_to_target
+        else:
+            # Fall back to the analytic estimate only for the display column
+            # when the target was never reached.
+            evals_per_iter = _estimate_evals_per_iter(name, qqn_kwarg_map.get(name, {}))
         # Per-target iterations (target-sensitivity profile).
         target_iters = {}
         for tgt in target_profile:

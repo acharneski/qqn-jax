@@ -88,6 +88,68 @@ const VARIANTS = {
         args: [],
         desc: 'Smaller problem sized for a low-VRAM GPU.',
     },
+    // ---- QQN showcase variants (headline wins from the analysis) --------
+    fashion_qqn_headline: {
+        report: 'fashion_mnist_mlp_comparison',
+        env: {
+            DATASET: 'fashion_mnist',
+            N_TRAIN: '25000',
+            N_TEST: '5000',
+            HIDDEN: '256',
+            DEPTH: '3',
+            ACTIVATION: 'tanh,gelu,tanh',
+        },
+        args: [],
+        desc:
+            'QQN headline: 256x3 tanh,gelu,tanh on 25k Fashion-MNIST. ' +
+            'Deep L-BFGS oracle wins iterations AND wall-clock vs L-BFGS.',
+    },
+    fashion_qqn_deep_hessian: {
+        report: 'fashion_mnist_mlp_comparison',
+        env: {
+            DATASET: 'fashion_mnist',
+            N_TRAIN: '25000',
+            N_TEST: '5000',
+            HIDDEN: '256',
+            DEPTH: '4',
+            ACTIVATION: 'tanh,gelu',
+        },
+        args: [],
+        desc:
+            'Richer/more anisotropic Hessian (256x4) where the deep-memory ' +
+            'curvature lever stays monotone — QQN`s strongest regime.',
+    },
+    fashion_qqn_tight_target: {
+        report: 'fashion_mnist_mlp_comparison',
+        env: {
+            DATASET: 'fashion_mnist',
+            N_TRAIN: '25000',
+            N_TEST: '5000',
+            HIDDEN: '256',
+            DEPTH: '3',
+            ACTIVATION: 'tanh,gelu,tanh',
+            F_TARGET: '2.0e-2',
+        },
+        args: [],
+        desc:
+            'Tighter 2e-2 target: QQN`s vs-LBFGS speedup widens monotonically ' +
+            'as the target tightens (1.45x -> ~1.91x).',
+    },
+    fashion_qqn_wide: {
+        report: 'fashion_mnist_mlp_comparison',
+        env: {
+            DATASET: 'fashion_mnist',
+            N_TRAIN: '25000',
+            N_TEST: '5000',
+            HIDDEN: '512',
+            DEPTH: '3',
+            ACTIVATION: 'tanh,gelu,tanh',
+        },
+        args: [],
+        desc:
+            'Wider network (512x3): even richer curvature, amplifying the ' +
+            'second-order advantage of QQN`s L-BFGS oracle.',
+    },
 
     // ----------------------- mnist_comparison ----------------------------
     mnist_default: {
@@ -108,7 +170,11 @@ const VARIANTS = {
 
 // Default set of variants to run when none are specified.
 const DEFAULT_VARIANTS = [
-    'fashion_default'
+    'fashion_default',
+    'fashion_qqn_headline',
+    'fashion_qqn_deep_hessian',
+    'fashion_qqn_tight_target',
+    'fashion_qqn_wide',
 ];
 
 // ---------------------------------------------------------------------------

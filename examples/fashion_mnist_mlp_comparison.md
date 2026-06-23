@@ -245,6 +245,26 @@ All optimizers stop under the **same** conditions, so the comparison is fair:
 The headline `f_target` is deliberately pushed tighter (`2e-2`) into the regime
 where QQN's curvature blend dominates hardest, while staying reachable within
 the time budget.
+### Overriding termination & training hyper-parameters
+Every value above (and the baseline learning rates / regularization) is
+overridable via environment variables, with the documented value as default:
+| Variable         | Type             | Default                       | Description                                         |
+| ---------------- | ---------------- | ----------------------------- | --------------------------------------------------- |
+| `F_TARGET`       | float            | `2.0e-2`                      | Headline target loss (first-crossing win point).    |
+| `GTOL`           | float            | `1.0e-8`                      | Gradient-norm convergence tolerance.                |
+| `TIME_BUDGET`    | float (seconds)  | `150.0`                       | Wall-clock cap.                                     |
+| `MILESTONES`     | comma-float list | `1.0,0.5,0.2,0.1`             | Loss levels for the convergence-rate profile.       |
+| `TARGET_PROFILE` | comma-float list | `0.2,0.1,0.06,0.04,0.02`      | Targets for the target-sensitivity speedup curve.   |
+| `MAXITER`        | int              | `1000000`                     | Hard iteration cap (shared by all optimizers).      |
+| `L2`             | float            | `1.0e-4`                      | L2 ridge penalty on the flat parameter vector.      |
+| `SGD_LR`         | float            | `0.05`                        | SGD baseline learning rate.                         |
+| `ADAM_LR`        | float            | `0.01`                        | Adam baseline learning rate.                        |
+| `SEED`           | int              | `42`                          | PRNG seed for the shared initial parameters.        |
+```bash
+# Tighter target with a shorter budget and a higher Adam LR
+F_TARGET=1e-2 TIME_BUDGET=300 ADAM_LR=0.02 \
+    python examples/fashion_mnist_mlp_comparison.py
+```
 
 ### Target-sensitivity profile
 
@@ -257,142 +277,7 @@ target_profile = (2.0e-1, 1.0e-1, 6.0e-2, 4.0e-2, 2.0e-2)
 
 ---
 
-## 6. Optimizer variants
-
-The script runs a large suite of QQN configurations plus the three baselines.
-Highlights:
-
-### Baselines
-
-| Name     | Configuration                                  |
-| -------- | ---------------------------------------------- |
-| `SGD`    | `optax.sgd(learning_rate=0.05)`                |
-| `Adam`   | `optax.adam(learning_rate=0.01)`               |
-| `L-BFGS` | `optax.lbfgs()` with zoom line search          |
-
-### Headline QQN winners
-
-| Name        | Configuration                                              | Role                                  |
-| ----------- | ---------------------------------------------------------- | ------------------------------------- |
-| `QQN`       | L-BFGS oracle, Armijo line search                          | Baseline QQN.                         |
-| `QQN-L80`   | L-BFGS history = 80                                         | Empirical sweet-spot / Pareto winner. |
-| `QQN-L120`  | L-BFGS history = 120                                        | Co-headline; often fastest wall-clock.|
-| `QQN-Lean`  | L-BFGS history = 80, bare Armijo only                      | Lean expression of the winning recipe.|
-| `QQN-Champ` | L-BFGS history = 120, bare Armijo only                     | Minimal pure-oracle wall-clock contender. |
-
-### Curvature-memory sweep (the decisive lever)
-
-`QQN-L20`, `QQN-L50`, `QQN-L80`, `QQN-L120`, `QQN-L160` sweep the L-BFGS history
-size to confirm whether the deep-memory lever is still monotone and unsaturated.
-
-### Alternative oracles
-
-| Name        | Oracle                                          |
-| ----------- | ----------------------------------------------- |
-| `QQN-Mom`   | `MomentumOracle(beta=0.9)`                      |
-| `QQN-Sec`   | `SecantOracle()` (matrix-free)                  |
-| `QQN-And`   | `AndersonOracle(window=5)`                      |
-| `QQN-L50And`| `Fallback([LBFGS(50), Anderson(5)])`            |
-| `QQN-L80And`| `Fallback([LBFGS(80), Anderson(5)])`            |
-
-### Region-constrained variants
-
-| Name      | Region                                            |
-| --------- | ------------------------------------------------- |
-| `QQN-TR`  | `TrustRegion(radius=1.0, adaptive=True)`          |
-| `QQN-Box` | `BoxRegion(lo=-2.0, hi=2.0)`                       |
-| `QQN-Fast`| L-BFGS(120) + `TrustRegion(radius=2.0, fixed)`    |
-| `QQN-Max` | `Fallback([LBFGS(80), Anderson(5)])` + fixed TR   |
-
-### Probe-feeding variants
-
-`QQN-L50P` (and historically `QQN-MaxP`) set `feed_probes_to_oracle=True`,
-forwarding every gradient evaluated *during the line search* into the oracle's
-curvature memory — enriching the L-BFGS Hessian approximation essentially for
-free, since those gradients were already computed.
-
-> **Quarantined:** on this surface probe-feeding into a deep history *stalls*
-> despite descent-gated admission; `QQN-L50P` is retained as a documented
-> negative control, **not** as a "free boost".
-
-### Negative controls (documented failures)
-
-| Name         | Why it's a negative control                                         |
-| ------------ | ------------------------------------------------------------------- |
-| `QQN-S`, `QQN-BT-S`, `QQN-Mom-S`, `QQN-Smooth`, `QQN-MaxS` | **Spline** variants diverge to chance on `tanh,gelu,tanh`. |
-| `QQN-Cheap`, `QQN-L80-BT` | **Warm-started backtracking** raises iterations for no ms/it saving (tamed warm-starts retained). |
-| `QQN-L50P`   | **Probe-feeding** pollutes the deep history and stalls.             |
-
----
-
-## 7. Output / reports
-
-The script prints a rich set of tables and profiles:
-
-1. **Summary table** — final loss, iterations, train/test accuracy, wall-time,
-   ms/it, iterations-to-target, time-to-target, vs-LBFGS speedup, estimated
-   evals, and trajectory AUC.
-2. **Pareto frontier** — non-dominated `(loss, wall-time)` variants.
-3. **Iteration-efficiency leaderboard** — fewest iterations to target.
-4. **Cost-aware leaderboard** — estimated function/grad **evals** to target
-   (addresses the metric caveat that iterations are not cost-neutral; QQN's
-   line-search probes issue several evaluations per accepted iteration).
-5. **Target-sensitivity profile** — iterations to each target in
-   `target_profile`, plus **vs-LBFGS speedup stability** for the key deep-memory
-   stacks.
-6. **Convergence-rate profiles** — first iteration / wall-time / eval count to
-   reach each milestone, plus an **inter-milestone cost breakdown**
-   (Δtime / Δevals between consecutive milestones).
-7. **Stall report** — non-converging variants with a diagnosed cause
-   (time-budget exhausted / plateau / slow).
-8. **Loss trajectory** — compact ASCII view at log10 scale.
-
-### Plots (optional)
-
-If `matplotlib` is installed, two timestamped PNGs are saved under `results/`:
-
-- `<dataset>_mlp_comparison_vs_iter_<timestamp>.png` — loss vs. iteration.
-- `<dataset>_mlp_comparison_vs_time_<timestamp>.png` — loss vs. wall-clock time
-  (captures per-iteration cost differences).
-
-Baselines (`SGD`, `Adam`, `L-BFGS`) are drawn with dashed lines for contrast.
-
----
-
-## 8. Cost-aware metrics — the evaluation-counting caveat
-
-Iterations are **not cost-neutral**: QQN's line-search iterations issue several
-function/gradient evaluations each, so "iterations-to-target" understates the
-true work done. The script attaches a **conservative analytic estimate** of
-evaluations-per-iteration to every method and reports
-**evaluations-to-target** alongside iterations:
-
-| Method          | Estimated evals / accepted iteration                         |
-| --------------- | ------------------------------------------------------------ |
-| SGD / Adam      | `1.0` (1 value + 1 grad)                                      |
-| L-BFGS          | `~3.0` (zoom line-search probes)                             |
-| QQN (armijo/BT) | `1 + min(max_iter, 4)` probes                                |
-| QQN (Wolfe)     | `1 + min(max_iter, 6)` probes                                |
-| QQN (Hager-Zhang)| `1 + min(max_iter, 5)` probes                               |
-| QQN (fixed)     | `1 + 1`                                                       |
-| + spline        | `+2.0` (stationary-point probes)                             |
-| + probe-feeding | `+0` (reuses gradients already computed)                     |
-
-These estimates are explicitly approximate but make cross-method cost
-comparisons far fairer than raw iteration counts.
-
----
-
-## 9. Reproducibility
-
-- Initial parameters use `jax.random.PRNGKey(42)`, so **every optimizer starts
-  from identical weights**.
-- The class-balanced data subset uses `np.random.default_rng(0)`.
-- The synthetic fallback uses seed `0`.
-
----
-
-## 10. Quick reference — common invocations
+## Quick reference — common invocations
 
 ```bash
 # Default headline experiment (Fashion-MNIST, 256x3, tanh,gelu)
