@@ -69,7 +69,6 @@ ENABLED = [
     # "QQN-Cheap",
     "QQN-Fast",
     # "QQN-Max",
-    "QQN-Champ",
     # "QQN-Lean",
     # --- Baselines ---
     "SGD",

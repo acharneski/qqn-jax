@@ -153,6 +153,102 @@ def OrthantRegion(l1: float = 0.0) -> Region:
     )
 
 
+# --- Quantization Region ----------------------------------------------
+def QuantizationRegion(
+    bits: Optional[int] = None,
+    step: Optional[float] = None,
+    lo: float = -1.0,
+    hi: float = 1.0,
+    lock: bool = False,
+    window: float = 1.0,
+) -> Region:
+    """Confine weights to the quantization *interval* of their starting value.
+
+     Quantization with ``bits`` levels over ``[lo, hi]`` defines a uniform grid
+     of representable values spaced by ``Δ = (hi − lo) / (2**bits − 1)`` (or by
+     an explicit ``step``). Consecutive grid points ``[lo + k·Δ, lo + (k+1)·Δ]``
+     form a *rounding interval*: every real value in this interval rounds to one
+     of the two surrounding grid points.
+
+     This region anchors the interval to the iterate's value **at the start of
+     the step** (``params``): a coordinate is free to explore the full width of
+     *its own* rounding interval, but is projected back at the grid-point walls
+     instead of being allowed to cross into a neighbouring interval.
+
+     The **cell center** — the midpoint between the two surrounding grid points —
+     acts as a natural attractor: it is the point of minimum rounding delta,
+     equidistant from both quantized neighbours. Because the search is projected
+     onto this interval, the optimizer is drawn toward low-rounding-error values
+     rather than toward the grid points themselves.
+
+    Args:
+        bits: number of quantization bits; the grid has ``2**bits`` levels over
+            ``[lo, hi]``. Provide either ``bits`` or ``step``.
+        step: explicit grid spacing ``Δ`` (overrides ``bits`` when given).
+        lo, hi: the quantization range. Values are clipped to ``[lo, hi]``
+            before rounding.
+         lock: if ``True``, collapse each coordinate to the nearest grid point —
+             hard-snap (true quantization, no exploration).
+            If ``False`` (default), the coordinate may roam freely within the
+             rounding interval around its starting value.
+        window: fraction of the half-cell the coordinate may explore when
+            ``lock=False``. ``window=1.0`` (default) exposes the full cell
+             ``[grid_k, grid_{k+1}]``; smaller values tighten the box
+             symmetrically about the interval midpoint.
+    """
+    if step is None and bits is None:
+        raise ValueError("QuantizationRegion requires either `bits` or `step`.")
+    # After the guard above, `bits` is non-None whenever `step` is None.
+    _bits: int = 0 if bits is None else int(bits)
+
+    def _delta(dtype):
+        if step is not None:
+            return jnp.asarray(step, dtype=dtype)
+        levels = (2**_bits) - 1
+        return jnp.asarray((hi - lo) / levels, dtype=dtype)
+
+    def project(params, candidate, state):
+        def proj_leaf(x, c):
+            dt = c.dtype
+            delta = _delta(dt)
+            lo_v = jnp.asarray(lo, dtype=dt)
+            hi_v = jnp.asarray(hi, dtype=dt)
+            # Find which quantization interval x falls in.
+            # Grid points are at lo + k*delta for integer k.
+            # The k-th rounding region is [lo + k*delta, lo + (k+1)*delta].
+            # Its center (the attractor) is lo + (k + 0.5)*delta.
+            # The walls are the grid points themselves.
+            x_clipped = jnp.clip(x, lo_v, hi_v)
+            # Which interval does x belong to? floor gives the lower grid index.
+            k = jnp.floor((x_clipped - lo_v) / delta)
+            # Clamp k so the upper wall doesn't exceed hi.
+            k_max = jnp.floor((hi_v - lo_v) / delta) - 1
+            k = jnp.clip(k, 0.0, k_max)
+            # Cell walls: the two surrounding grid points.
+            cell_lo_grid = lo_v + k * delta
+            cell_hi_grid = lo_v + (k + 1.0) * delta
+            # Cell center: midpoint between the two grid points — the
+            # attractor that minimises rounding delta.
+            center = (cell_lo_grid + cell_hi_grid) * 0.5
+            if lock:
+                # Collapse to the nearest grid point (true quantization).
+                return jnp.round((x_clipped - lo_v) / delta) * delta + lo_v
+            # The explorable cell runs between the two surrounding grid points,
+            # optionally narrowed by `window` around the cell center.
+            half = jnp.asarray(window, dtype=dt) * delta * 0.5
+            cell_lo = jnp.maximum(center - half, cell_lo_grid)
+            cell_hi = jnp.minimum(center + half, cell_hi_grid)
+            return jnp.clip(c, cell_lo, cell_hi)
+
+        return jax.tree_util.tree_map(proj_leaf, params, candidate)
+
+    return Region(
+        init=_identity_init,
+        project=project,
+        update=_identity_update,
+    )
+
+
 # --- Trust-Region Sphere ----------------------------------------------
 
 
@@ -232,7 +328,6 @@ def TrustRegion(
     return Region(init=init, project=project, update=update)
 
 
-# --- Combinator: Sequential -------------------------------------------
 # --- No-Decrease Region (multi-objective guard) -----------------------
 def NoDecreaseRegion(secondary_grad_fn: Callable) -> Region:
     """Project each step onto the half-space ``{s : ⟨∇g, s⟩ ≤ 0}``.
@@ -271,6 +366,9 @@ def NoDecreaseRegion(secondary_grad_fn: Callable) -> Region:
         project=project,
         update=_identity_update,
     )
+
+
+# --- Combinator: Sequential -------------------------------------------
 
 
 def Sequential(regions: Sequence[Region]) -> Region:
@@ -314,6 +412,7 @@ __all__ = [
     "OrthantRegion",
     "TrustRegion",
     "TrustRegionState",
+    "QuantizationRegion",
     "NoDecreaseRegion",
     "Sequential",
     "resolve_region",
