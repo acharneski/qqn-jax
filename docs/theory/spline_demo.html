@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spline Search Demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      h1 {
+        font-weight: 600;
+        margin-bottom: 4px;
+        color: #4fc3f7;
+      }
+      p.subtitle {
+        margin-top: 0;
+        color: #9e9e9e;
+        max-width: 640px;
+        text-align: center;
+        line-height: 1.4;
+      }
+      .wrap {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: flex-start;
+      }
+      canvas {
+        background: #16213e;
+        border: 1px solid #0f3460;
+        border-radius: 8px;
+        cursor: crosshair;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      }
+      .panel {
+        background: #16213e;
+        border: 1px solid #0f3460;
+        border-radius: 8px;
+        padding: 16px 20px;
+        min-width: 260px;
+        max-width: 320px;
+      }
+      .panel h2 {
+        font-size: 15px;
+        color: #4fc3f7;
+        margin: 0 0 8px 0;
+      }
+      button {
+        background: #0f3460;
+        color: #e0e0e0;
+        border: 1px solid #4fc3f7;
+        border-radius: 6px;
+        padding: 8px 14px;
+        cursor: pointer;
+        font-size: 14px;
+        margin: 4px 4px 4px 0;
+        transition: background 0.15s;
+      }
+      button:hover { background: #4fc3f7; color: #16213e; }
+      label.toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .cp-list {
+        font-family: "SF Mono", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        max-height: 220px;
+        overflow-y: auto;
+        margin-top: 8px;
+      }
+      .cp-row { padding: 2px 0; border-bottom: 1px solid #0f346055; }
+      .cp-row .reflected { color: #ff7043; }
+      .legend { font-size: 13px; line-height: 1.7; margin-top: 12px; }
+      .swatch {
+        display: inline-block;
+        width: 14px; height: 3px;
+        vertical-align: middle;
+        margin-right: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Spline Search Demo</h1>
+    <p class="subtitle">
+      A piecewise cubic Hermite spline anchored at (0, 1) and (1, 0). Each control
+      point carries a measured slope (tangent). <b>Click anywhere on the curve</b>
+      to drop a new control point with a random, parity-aligned tangent. Tangents
+      whose sign opposes the segment secant are reflected (shown in orange).
+    </p>
+    <div class="wrap">
+      <canvas id="cv" width="640" height="560"></canvas>
+      <div class="panel">
+        <h2>Controls</h2>
+        <button id="reset">Reset</button>
+        <button id="randomize">Randomize Tangents</button>
+        <label class="toggle">
+          <input type="checkbox" id="showRaw" />
+          Show raw (uncorrected) tangents
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="showStat" checked />
+          Show stationary points (candidate minimizers)
+        </label>
+        <div class="legend">
+          <div><span class="swatch" style="background:#4fc3f7"></span>Spline curve</div>
+          <div><span class="swatch" style="background:#66bb6a"></span>Tangent (aligned)</div>
+          <div><span class="swatch" style="background:#ff7043"></span>Tangent (reflected)</div>
+          <div><span class="swatch" style="background:#ffd54f"></span>Stationary points</div>
+        </div>
+        <h2 style="margin-top:16px">Control Points (t, f, m)</h2>
+        <div class="cp-list" id="cpList"></div>
+      </div>
+    </div>
+
+    <script>
+      const cv = document.getElementById('cv');
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height;
+
+      // World coordinate ranges. We map t (x) and f (y) into pixel space.
+      const T_MIN = -0.15, T_MAX = 1.15;
+      const F_MIN = -0.6,  F_MAX = 1.6;
+      const PAD = 50;
+
+      // Control points: { t, f, m }  (m is the measured directional derivative)
+      let controlPoints = [];
+
+      // ---- coordinate mapping ----
+      const tx = t => PAD + (t - T_MIN) / (T_MAX - T_MIN) * (W - 2 * PAD);
+      const fy = f => (H - PAD) - (f - F_MIN) / (F_MAX - F_MIN) * (H - 2 * PAD);
+      const inv_tx = px => T_MIN + (px - PAD) / (W - 2 * PAD) * (T_MAX - T_MIN);
+
+      // ---- random tangent in t-units ----
+      const randTangent = () => (Math.random() * 2 - 1) * 2.5;
+
+      function reset() {
+        controlPoints = [
+          { t: 0, f: 1, m: randTangent() },
+          { t: 1, f: 0, m: randTangent() }
+        ];
+        draw();
+      }
+
+      function randomizeTangents() {
+        controlPoints.forEach(cp => cp.m = randTangent());
+        draw();
+      }
+
+      // ---- Hermite basis ----
+      const h00 = s => 2*s*s*s - 3*s*s + 1;
+      const h10 = s => s*s*s - 2*s*s + s;
+      const h01 = s => -2*s*s*s + 3*s*s;
+      const h11 = s => s*s*s - s*s;
+
+      // ---- derivatives of basis (w.r.t s) ----
+      const dh00 = s => 6*s*s - 6*s;
+      const dh10 = s => 3*s*s - 4*s + 1;
+      const dh01 = s => -6*s*s + 6*s;
+      const dh11 = s => 3*s*s - 2*s;
+
+      // Apply the upstream/downstream symmetry correction (parity alignment).
+      // Given a segment secant slope `delta`, reflect tangent m if its sign opposes delta.
+      function alignTangent(m, delta) {
+        if (delta !== 0 && Math.sign(m) !== Math.sign(delta)) {
+          return { m: -m, reflected: true };
+        }
+        return { m, reflected: false };
+      }
+
+      // Evaluate a segment between cp0 and cp1 at parameter t.
+      function evalSegment(cp0, cp1, t, useRaw) {
+        const h = cp1.t - cp0.t;
+        const s = (t - cp0.t) / h;
+        const delta = (cp1.f - cp0.f) / h;
+        let m0 = cp0.m, m1 = cp1.m;
+        if (!useRaw) {
+          m0 = alignTangent(cp0.m, delta).m;
+          m1 = alignTangent(cp1.m, delta).m;
+        }
+        return h00(s)*cp0.f + h10(s)*h*m0 + h01(s)*cp1.f + h11(s)*h*m1;
+      }
+
+      // Find stationary points (f'(s)=0) within a segment. Returns array of {t, f}.
+      function segmentStationary(cp0, cp1, useRaw) {
+        const h = cp1.t - cp0.t;
+        const delta = (cp1.f - cp0.f) / h;
+        let m0 = cp0.m, m1 = cp1.m;
+        if (!useRaw) {
+          m0 = alignTangent(cp0.m, delta).m;
+          m1 = alignTangent(cp1.m, delta).m;
+        }
+        // f'(s) = dh00*f0 + dh10*h*m0 + dh01*f1 + dh11*h*m1   (quadratic in s)
+        // collect coefficients a*s^2 + b*s + c
+        // dh00 = 6s^2-6s ; dh10 = 3s^2-4s+1 ; dh01 = -6s^2+6s ; dh11 = 3s^2-2s
+        const a = 6*cp0.f + 3*h*m0 - 6*cp1.f + 3*h*m1;
+        const b = -6*cp0.f - 4*h*m0 + 6*cp1.f - 2*h*m1;
+        const c = h*m0;
+        const roots = [];
+        if (Math.abs(a) < 1e-9) {
+          if (Math.abs(b) > 1e-9) roots.push(-c / b);
+        } else {
+          const disc = b*b - 4*a*c;
+          if (disc >= 0) {
+            const sq = Math.sqrt(disc);
+            roots.push((-b + sq) / (2*a));
+            roots.push((-b - sq) / (2*a));
+          }
+        }
+        const out = [];
+        for (const s of roots) {
+          if (s >= 0 && s <= 1) {
+            const t = cp0.t + s * h;
+            out.push({ t, f: evalSegment(cp0, cp1, t, useRaw) });
+          }
+        }
+        return out;
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        const useRaw = document.getElementById('showRaw').checked;
+        const showStat = document.getElementById('showStat').checked;
+
+        drawGrid();
+
+        const sorted = [...controlPoints].sort((a, b) => a.t - b.t);
+
+        // ---- draw spline curve, segment by segment ----
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const cp0 = sorted[i], cp1 = sorted[i+1];
+          const steps = 60;
+          for (let k = 0; k <= steps; k++) {
+            const t = cp0.t + (cp1.t - cp0.t) * (k / steps);
+            const f = evalSegment(cp0, cp1, t, useRaw);
+            const px = tx(t), py = fy(f);
+            if (!started) { ctx.moveTo(px, py); started = true; }
+            else ctx.lineTo(px, py);
+          }
+        }
+        ctx.stroke();
+
+        // ---- draw tangents ----
+        for (const cp of sorted) {
+          // Determine reflection state by looking at adjacent segment secant.
+          let reflected = false;
+          let drawM = cp.m;
+          if (!useRaw) {
+            // pick a neighboring segment containing this point
+            const idx = sorted.indexOf(cp);
+            let delta = null;
+            if (idx < sorted.length - 1) {
+              const nb = sorted[idx+1];
+              delta = (nb.f - cp.f) / (nb.t - cp.t);
+            } else if (idx > 0) {
+              const nb = sorted[idx-1];
+              delta = (cp.f - nb.f) / (cp.t - nb.t);
+            }
+            if (delta !== null) {
+              const a = alignTangent(cp.m, delta);
+              drawM = a.m;
+              reflected = a.reflected;
+            }
+          }
+          drawTangent(cp.t, cp.f, drawM, reflected);
+        }
+
+        // ---- draw stationary points ----
+        if (showStat) {
+          ctx.fillStyle = '#ffd54f';
+          for (let i = 0; i < sorted.length - 1; i++) {
+            const pts = segmentStationary(sorted[i], sorted[i+1], useRaw);
+            for (const p of pts) {
+              ctx.beginPath();
+              ctx.arc(tx(p.t), fy(p.f), 5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        // ---- draw control points ----
+        for (const cp of sorted) {
+          const px = tx(cp.t), py = fy(cp.f);
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          ctx.arc(px, py, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#0f3460';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        updateList(sorted, useRaw);
+      }
+
+      // tangent drawn as a short line segment with slope m (in t,f units)
+      function drawTangent(t, f, m, reflected) {
+        const dt = 0.09;
+        const x0 = t - dt, x1 = t + dt;
+        const y0 = f - m * dt, y1 = f + m * dt;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = reflected ? '#ff7043' : '#66bb6a';
+        ctx.beginPath();
+        ctx.moveTo(tx(x0), fy(y0));
+        ctx.lineTo(tx(x1), fy(y1));
+        ctx.stroke();
+        // little arrowheads
+        ctx.fillStyle = reflected ? '#ff7043' : '#66bb6a';
+        for (const [xx, yy] of [[x1, y1], [x0, y0]]) {
+          ctx.beginPath();
+          ctx.arc(tx(xx), fy(yy), 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawGrid() {
+        ctx.strokeStyle = '#0f346088';
+        ctx.lineWidth = 1;
+        ctx.fillStyle = '#7e8aa0';
+        ctx.font = '11px monospace';
+        // vertical t gridlines
+        for (let t = 0; t <= 1.0001; t += 0.25) {
+          const px = tx(t);
+          ctx.beginPath();
+          ctx.moveTo(px, PAD); ctx.lineTo(px, H - PAD);
+          ctx.stroke();
+          ctx.fillText('t=' + t.toFixed(2), px - 14, H - PAD + 16);
+        }
+        // horizontal f gridlines
+        for (let f = -0.5; f <= 1.5001; f += 0.5) {
+          const py = fy(f);
+          ctx.beginPath();
+          ctx.moveTo(PAD, py); ctx.lineTo(W - PAD, py);
+          ctx.stroke();
+          ctx.fillText('f=' + f.toFixed(1), 6, py + 4);
+        }
+        // axis labels
+        ctx.fillStyle = '#4fc3f7';
+        ctx.font = '13px sans-serif';
+        ctx.fillText('path parameter t →', W - 170, H - 18);
+      }
+
+      function updateList(sorted, useRaw) {
+        const el = document.getElementById('cpList');
+        el.innerHTML = '';
+        for (let i = 0; i < sorted.length; i++) {
+          const cp = sorted[i];
+          // determine reflection wrt adjacent segment
+          let reflected = false;
+          if (!useRaw) {
+            let delta = null;
+            if (i < sorted.length - 1) {
+              delta = (sorted[i+1].f - cp.f) / (sorted[i+1].t - cp.t);
+            } else if (i > 0) {
+              delta = (cp.f - sorted[i-1].f) / (cp.t - sorted[i-1].t);
+            }
+            if (delta !== null) reflected = alignTangent(cp.m, delta).reflected;
+          }
+          const row = document.createElement('div');
+          row.className = 'cp-row';
+          const tag = reflected ? ' <span class="reflected">(reflected)</span>' : '';
+          row.innerHTML = `#${i}: (${cp.t.toFixed(3)}, ${cp.f.toFixed(3)}, ` +
+                          `m=${cp.m.toFixed(3)})${tag}`;
+          el.appendChild(row);
+        }
+      }
+
+      // ---- click handling: find nearest point ON the curve and add control point ----
+      cv.addEventListener('click', e => {
+        const rect = cv.getBoundingClientRect();
+        const px = (e.clientX - rect.left) * (cv.width / rect.width);
+        const useRaw = document.getElementById('showRaw').checked;
+
+        // map click x to a t value, then snap f onto the curve
+        let t = inv_tx(px);
+        const sorted = [...controlPoints].sort((a, b) => a.t - b.t);
+        const tLo = sorted[0].t, tHi = sorted[sorted.length - 1].t;
+        if (t <= tLo || t >= tHi) return; // only allow clicks within the bracket
+
+        // find the segment containing t and evaluate f on the spline
+        let f = null;
+        for (let i = 0; i < sorted.length - 1; i++) {
+          if (t >= sorted[i].t && t <= sorted[i+1].t) {
+            f = evalSegment(sorted[i], sorted[i+1], t, useRaw);
+            break;
+          }
+        }
+        if (f === null) return;
+
+        // New measured tangent: random magnitude, parity-aligned to the LOCAL secant.
+        // We align with the secant of the segment we're splitting so the new
+        // control point obeys the upstream/downstream symmetry described in the doc.
+        let segDelta = 0;
+        for (let i = 0; i < sorted.length - 1; i++) {
+          if (t >= sorted[i].t && t <= sorted[i+1].t) {
+            segDelta = (sorted[i+1].f - sorted[i].f) / (sorted[i+1].t - sorted[i].t);
+            break;
+          }
+        }
+        let m = randTangent();
+        // parity-align: ensure sign(m) matches sign(segDelta) when secant is non-flat
+        if (segDelta !== 0 && Math.sign(m) !== Math.sign(segDelta)) {
+          m = -m;
+        }
+
+        controlPoints.push({ t, f, m });
+        draw();
+      });
+
+      document.getElementById('reset').onclick = reset;
+      document.getElementById('randomize').onclick = randomizeTangents;
+      document.getElementById('showRaw').onchange = draw;
+      document.getElementById('showStat').onchange = draw;
+
+      reset();
+    </script>
+  </body>
+  </html>

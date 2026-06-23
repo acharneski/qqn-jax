@@ -1,5 +1,7 @@
 # Spline Search: An Improvement on the Quadratic Path
 
+[demo](spline_demo.html)
+
 ## Motivation
 
 In the QQN line search, every function evaluation along the quadratic path `d(t)`
