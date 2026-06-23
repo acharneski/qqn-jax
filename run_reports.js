@@ -118,33 +118,6 @@ const VARIANTS = {
             'Wider network (512x3): even richer curvature, amplifying the ' +
             'second-order advantage of QQN`s L-BFGS oracle.',
     },
-    // ---- Alternate oracle showcase variants -----------------------------
-    fashion_alt_shallow: {
-        report: 'fashion_mnist_mlp_comparison',
-        env: {
-            DATASET: 'fashion_mnist',
-            N_TRAIN: '25000',
-            N_TEST: '5000',
-            HIDDEN: '128',
-            DEPTH: '1',
-            ACTIVATION: 'tanh',
-        },
-        args: [],
-        desc: 'Shallow network (128x1) to test if alternate oracles (Anderson, Secant) can compete on a simpler Hessian.',
-    },
-    fashion_alt_relu: {
-        report: 'fashion_mnist_mlp_comparison',
-        env: {
-            DATASET: 'fashion_mnist',
-            N_TRAIN: '25000',
-            N_TEST: '5000',
-            HIDDEN: '128',
-            DEPTH: '2',
-            ACTIVATION: 'relu',
-        },
-        args: [],
-        desc: 'Piecewise linear (ReLU) surface where Secant or Anderson might navigate better than on smooth curves.',
-    },
     fashion_alt_linear: {
         report: 'fashion_mnist_mlp_comparison',
         env: {
@@ -235,8 +208,7 @@ const DEFAULT_VARIANTS = [
     // 'fashion_default',
     // 'fashion_qqn_deep_hessian', // Demonstrates value and the test runs fast
     // 'fashion_qqn_wide', // Successfully shows a wider advantage for QQN
-    'fashion_alt_shallow',
-    'fashion_alt_relu',
+    //'fashion_alt_relu', // Redundant, narrow advantage
     'fashion_alt_linear',
     'fashion_profile_scalene',
 ];

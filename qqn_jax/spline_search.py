@@ -35,27 +35,18 @@ from qqn_jax.line_search import LineSearchResult, backtracking_search
 def _orient_tangents(h, f0, m0, f1, m1):
     """Apply the upstream/downstream symmetry correction to tangents.
 
-    For a segment spanning ``(t0, f0)`` and ``(t1, f1)`` with width ``h``,
-    the secant slope is ``Δ = (f1 - f0) / h``. Any endpoint tangent whose
-    sign opposes ``Δ`` (and ``Δ ≠ 0``) is reflected so it aligns with the
-    channel's natural flow. When ``Δ = 0`` the raw tangents are kept.
+    Each tangent ``m = ⟨∇f, [dx/dt, dy/dt]⟩`` is the dot product of the
+    gradient with the parametric path velocity. If that dot product is
+    negative the tangent points "backwards" against the path's natural
+    flow, so we reverse it so every oriented tangent agrees with the
+    forward direction of travel along the curve.
     """
-    delta = (f1 - f0) / h
-    flat = delta == 0.0
-    # A genuine interior minimum is bracketed when the left slope descends
-    # and the right slope ascends (m0 < 0 < m1). In that case the raw
-    # tangents already describe a valley; reflecting them would erase the
-    # legitimate stationary point, so we must leave them untouched.
-    bracketed_min = jnp.logical_and(m0 < 0.0, m1 > 0.0)
 
+    # m is already ⟨∇f, d'(t)⟩, the dot product of the gradient with the
+    # parametric path velocity. Reverse any tangent with negative dot
+    # product so it aligns with the forward flow of the path.
     def reflect(m):
-        opposed = jnp.logical_and(jnp.sign(m) != jnp.sign(delta), delta != 0.0)
-        m_corr = jnp.where(opposed, -m, m)
-        # When the secant is flat, keep the raw tangent untouched.
-        m_corr = jnp.where(flat, m, m_corr)
-        # Preserve a legitimately bracketed interior minimum.
-        m_corr = jnp.where(bracketed_min, m, m_corr)
-        return m_corr
+        return jnp.where(m < 0.0, -m, m)
 
     return reflect(m0), reflect(m1)
 
