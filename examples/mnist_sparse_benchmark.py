@@ -75,6 +75,7 @@ from qqn_jax.solver import QQN
 from qqn_jax.regions import (
     OrthantRegion,
     QuantizationRegion,
+    Sequential,
 )
 from qqn_jax.regularizers import (
     l1_penalty,
@@ -465,6 +466,127 @@ def plot_convergence(results: List[Dict[str, Any]], fname: str = "convergence.pn
         pass
 
 
+def plot_pareto(results: List[Dict[str, Any]], fname: str = "pareto.png"):
+    """Scatter test_loss vs. sparsity, highlighting the Pareto frontier.
+    Each configuration is plotted as a point; non-dominated configs (lower
+    test_loss AND higher sparsity is better) are connected to form the
+    frontier. Gracefully degrades if matplotlib is unavailable.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - environment dependent
+        print(f"[plot_pareto] matplotlib unavailable ({exc!r}); skipping plot.")
+        return
+    if not results:
+        return
+    # Compute the non-dominated (Pareto) set.
+    pareto = []
+    for i, r in enumerate(results):
+        dominated = False
+        for j, o in enumerate(results):
+            if i == j:
+                continue
+            no_worse = (
+                o["test_loss"] <= r["test_loss"] and o["sparsity"] >= r["sparsity"]
+            )
+            strictly_better = (
+                o["test_loss"] < r["test_loss"] or o["sparsity"] > r["sparsity"]
+            )
+            if no_worse and strictly_better:
+                dominated = True
+                break
+        if not dominated:
+            pareto.append(r)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    # All configs as faint points.
+    xs = [r["sparsity"] for r in results]
+    ys = [r["test_loss"] for r in results]
+    ax.scatter(xs, ys, c="lightgray", s=30, label="dominated", zorder=1)
+    # Pareto-optimal configs highlighted.
+    px = [r["sparsity"] for r in pareto]
+    py = [r["test_loss"] for r in pareto]
+    ax.scatter(px, py, c="crimson", s=60, label="Pareto frontier", zorder=3)
+    # Connect the frontier (sorted by sparsity).
+    frontier = sorted(pareto, key=lambda d: d["sparsity"])
+    ax.plot(
+        [r["sparsity"] for r in frontier],
+        [r["test_loss"] for r in frontier],
+        c="crimson",
+        linestyle="--",
+        linewidth=1.0,
+        zorder=2,
+    )
+    # Annotate frontier points with their config names.
+    for r in frontier:
+        ax.annotate(
+            r["name"],
+            (r["sparsity"], r["test_loss"]),
+            fontsize=6,
+            textcoords="offset points",
+            xytext=(4, 4),
+        )
+    ax.set_xlabel("weight sparsity (fraction near-zero)")
+    ax.set_ylabel("test loss")
+    ax.set_title("Accuracy vs. sparsity trade-off: sparse MNIST")
+    ax.legend()
+    ax.grid(True, linestyle=":", alpha=0.5)
+    fig.tight_layout()
+    fig.savefig(fname, dpi=120)
+    print(f"Saved Pareto plot to {fname!r}")
+    try:
+        plt.show()
+    except Exception:
+        pass
+
+
+def plot_metrics_bar(results: List[Dict[str, Any]], fname: str = "metrics_bar.png"):
+    """Grouped bar chart comparing key metrics across all configurations.
+    Plots test_loss, sparsity and quant_loss side-by-side per config so the
+    relative trade-offs are visible at a glance. Gracefully degrades if
+    matplotlib is unavailable.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as _np
+    except Exception as exc:  # pragma: no cover - environment dependent
+        print(f"[plot_metrics_bar] matplotlib unavailable ({exc!r}); skipping plot.")
+        return
+    if not results:
+        return
+    names = [r["name"] for r in results]
+    test_losses = [r["test_loss"] for r in results]
+    sparsities = [r["sparsity"] for r in results]
+    quant_losses = [r.get("quant_loss", 0.0) for r in results]
+    n = len(results)
+    y = _np.arange(n)
+    height = 0.25
+    # Tall figure so many configs remain readable.
+    fig, ax = plt.subplots(figsize=(10, max(4, 0.4 * n)))
+    ax.barh(y - height, test_losses, height, label="test_loss", color="steelblue")
+    ax.barh(y, sparsities, height, label="sparsity", color="seagreen")
+    ax.barh(y + height, quant_losses, height, label="quant_loss", color="indianred")
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=7)
+    ax.invert_yaxis()  # first config on top
+    ax.set_xlabel("value")
+    ax.set_title("Per-config metrics: sparse MNIST")
+    ax.legend()
+    ax.grid(True, axis="x", linestyle=":", alpha=0.5)
+    fig.tight_layout()
+    fig.savefig(fname, dpi=120)
+    print(f"Saved metrics bar chart to {fname!r}")
+    try:
+        plt.show()
+    except Exception:
+        pass
+
+
 def run_config(
     name: str,
     region,
@@ -642,6 +764,15 @@ def main():
             params, scale=quant_scale, bits=QBITS, lo=QLO, hi=QHI, weights_only=True
         )
 
+    def quant_l1_reg(params):
+        # Joint objective: pull weights onto the grid (quantization delta)
+        # *and* toward zero (L1). The L1 term keeps near-zero weights pinned to
+        # the zero grid-point during polishing, so sparsity is retained/formed
+        # rather than smeared across the grid by pure quantization.
+        return quantization_delta_penalty(
+            params, scale=quant_scale, bits=QBITS, lo=QLO, hi=QHI, weights_only=True
+        ) + l1_penalty(params, scale=l1_scale, weights_only=True)
+
     # ------------------------------------------------------------------
     # Phase 1: raw (cold-start) training of base models.
     # These are full training runs from random init. Each produces a
@@ -678,6 +809,56 @@ def main():
             QuantizationRegion(bits=QBITS, lo=QLO, hi=QHI),
             "strong_wolfe",
             quant_reg,
+        ),
+        # --- Joint sparse+quantized polishing -------------------------------
+        # The pure-quantization variants above can *erode* sparsity: a weight
+        # near zero is free to drift to a non-zero grid cell, and the
+        # QuantizationRegion does not protect signs. The following variants
+        # combine quantization with sparsity machinery so sparsity is RETAINED
+        # (for sparse base models) or FORMED (for dense ones) during polishing.
+        #
+        # (a) Joint REGIONS: Orthant (sign-preserving / zero-walling) composed
+        #     with QuantizationRegion. The step is first confined to its
+        #     rounding cell, then walled at zero so no weight crosses sign.
+        #     Coordinates already at zero stay at zero -> sparsity preserved.
+        (
+            "orthant+quant-region (sparse+prec)",
+            Sequential(
+                [
+                    QuantizationRegion(bits=QBITS, lo=QLO, hi=QHI),
+                    OrthantRegion(),
+                ]
+            ),
+            "strong_wolfe",
+            None,
+        ),
+        # (b) Joint region + joint penalty: confine to the rounding cell AND
+        #     wall at zero, while the objective pulls weights onto the grid and
+        #     toward zero. Strongest sparsity-preserving precision polish.
+        (
+            "orthant+quant-region+quant-l1 (sparse+prec)",
+            Sequential(
+                [
+                    QuantizationRegion(bits=QBITS, lo=QLO, hi=QHI),
+                    OrthantRegion(),
+                ]
+            ),
+            "strong_wolfe",
+            quant_l1_reg,
+        ),
+        # (c) Joint PENALTY only (no orthant wall): quantization-delta + L1.
+        #     L1 actively *forms* new sparsity (pins weights to the zero grid
+        #     point) even on a dense base model, while quantization handles the
+        #     remaining nonzero weights.
+        ("quant+l1-penalty (sparse+prec)", None, "strong_wolfe", quant_l1_reg),
+        # (d) Sparsity-forming region + joint penalty: QuantizationRegion for
+        #     precision plus L1 to drive coordinates onto the zero grid-point.
+        #     Forms sparsity on dense models without the orthant sign-lock.
+        (
+            "quant-region+quant-l1 (sparse+prec)",
+            QuantizationRegion(bits=QBITS, lo=QLO, hi=QHI),
+            "strong_wolfe",
+            quant_l1_reg,
         ),
     ]
 
@@ -813,6 +994,10 @@ def main():
 
     # Plot convergence curves across configurations.
     plot_convergence(results)
+    # Plot the accuracy-vs-sparsity Pareto trade-off.
+    plot_pareto(results)
+    # Plot a grouped bar chart of key per-config metrics.
+    plot_metrics_bar(results)
 
 
 if __name__ == "__main__":
