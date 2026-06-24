@@ -80,6 +80,7 @@ from qqn_jax.regions import (
 from qqn_jax.regularizers import (
     l1_penalty,
     quantization_delta_penalty,
+    round_to_grid,
 )
 
 
@@ -420,13 +421,9 @@ def round_params_to_grid(
     Used to measure the *post-rounding* loss: a precision-optimized network
     should show (almost) no loss increase after this rounding.
     """
-    delta = (hi - lo) / ((2**bits) - 1)
     quantized = []
     for layer in params:
-        w = jnp.clip(layer["w"], lo, hi)
-        k = jnp.round((w - lo) / delta)
-        k = jnp.clip(k, 0.0, jnp.floor((hi - lo) / delta))
-        grid = lo + k * delta
+        grid = round_to_grid(layer["w"], bits=bits, lo=lo, hi=hi)
         quantized.append({"w": grid, "b": layer["b"]})
     return quantized
 
@@ -690,6 +687,11 @@ def run_config(
         final_params, bits=quant_bits, lo=quant_lo, hi=quant_hi
     )
     quant_loss_val = float(test_loss(quant_params, x_test, y_test, activation))
+    # Sparsity of the *deployable* (rounded) model: weights that the grid maps
+    # exactly to the zero grid-point. This is the sparsity that actually
+    # survives quantization, which can differ sharply from the pre-rounding
+    # sparsity reported above for precision-polished configs.
+    quant_sparsity_val = sparsity(quant_params)
 
     return {
         "name": name,
@@ -698,6 +700,7 @@ def run_config(
         "test_loss": test_loss_val,
         "sparsity": spars,
         "quant_loss": quant_loss_val,
+        "quant_sparsity": quant_sparsity_val,
         "time_s": elapsed,
         "loss_history": loss_history,
         # Trained parameters (flat) + unflatten fn, so this result can serve
@@ -896,6 +899,7 @@ def main():
             f"  iters={res['iters']:3d}  loss={res['loss']:.4f}  "
             f"test_loss={res['test_loss']:.4f}  "
             f"sparsity={res['sparsity']:.3f}  "
+            f"q_sparsity={res.get('quant_sparsity', 0.0):.3f}  "
             f"quant_loss={res['quant_loss']:.4f}  time={res['time_s']:.2f}s"
         )
 

@@ -30,12 +30,41 @@ __all__ = [
     "quantization_delta_penalty",
     "elastic_net_penalty",
     "select_weights",
+    "round_to_grid",
 ]
 
 
 def _leaves(params: Any):
     """Return the numeric leaves of a pytree (or [array] for a bare array)."""
     return jax.tree_util.tree_leaves(params)
+
+
+def round_to_grid(
+    x: jnp.ndarray,
+    bits: Optional[int] = None,
+    step: Optional[float] = None,
+    lo: float = -1.0,
+    hi: float = 1.0,
+) -> jnp.ndarray:
+    """Round ``x`` onto the uniform grid over ``[lo, hi]``.
+    Single source of truth for grid rounding shared by
+    :func:`quantization_delta_penalty` (the penalty) and the example's
+    post-rounding evaluation, so the two can never silently diverge.
+    """
+    if step is None and bits is None:
+        raise ValueError("round_to_grid requires either `bits` or `step`.")
+    dt = x.dtype
+    lo_v = jnp.asarray(lo, dtype=dt)
+    hi_v = jnp.asarray(hi, dtype=dt)
+    if step is not None:
+        delta = jnp.asarray(step, dtype=dt)
+    else:
+        assert bits is not None
+        delta = jnp.asarray((hi - lo) / ((2 ** int(bits)) - 1), dtype=dt)
+    x_clipped = jnp.clip(x, lo_v, hi_v)
+    k = jnp.round((x_clipped - lo_v) / delta)
+    k = jnp.clip(k, 0.0, jnp.floor((hi_v - lo_v) / delta))
+    return lo_v + k * delta
 
 
 def select_weights(params: Any, key: str = "w"):

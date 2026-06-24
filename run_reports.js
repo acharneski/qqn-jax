@@ -327,7 +327,7 @@ const DEFAULT_VARIANTS = [
 // Execution
 // ---------------------------------------------------------------------------
 
-function runVariant(name, variant, ts) {
+function runVariant(name, variant) {
     return new Promise((resolve) => {
         // Use a per-variant timestamp so sequential runs are distinguishable
         // and never silently collide.
@@ -376,6 +376,13 @@ function runVariant(name, variant, ts) {
         const child = spawn(executable, spawnArgs, {
             env: {...process.env, ...variant.env},
         });
+       // Forward Ctrl-C to the child so a cancelled run tears down cleanly
+       // instead of orphaning the Python/Scalene process.
+       const onSigint = () => {
+           console.error(`\n!!! Interrupted — terminating variant "${name}"`);
+           child.kill('SIGTERM');
+       };
+       process.on('SIGINT', onSigint);
         // Write a reproducible header so each log is self-describing.
         const startedAt = Date.now();
         const envPairs = Object.entries(variant.env)
@@ -403,6 +410,7 @@ function runVariant(name, variant, ts) {
         });
 
         child.on('close', (code) => {
+           process.removeListener('SIGINT', onSigint);
             const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
             logStream.write(
                 `\n${'-'.repeat(72)}\n` +
@@ -420,6 +428,7 @@ function runVariant(name, variant, ts) {
         });
 
         child.on('error', (err) => {
+           process.removeListener('SIGINT', onSigint);
             console.error(`!!! Failed to start variant "${name}": ${err.message}`);
             logStream.end();
             resolve(1);
@@ -436,6 +445,10 @@ function listVariants() {
         console.log(`  ${name.padEnd(width)}  [${v.report}]  ${v.desc}`);
     }
     console.log('\nDefault set:', DEFAULT_VARIANTS.join(', '));
+   const reports = [
+       ...new Set(Object.values(VARIANTS).map((v) => v.report)),
+   ].sort();
+   console.log('Reports     :', reports.join(', '));
 }
 
 function parseArgs(argv) {
@@ -447,7 +460,11 @@ function parseArgs(argv) {
         } else if (a === '--all' || a === '-a') {
             opts.all = true;
         } else if (a === '--report' || a === '-r') {
-            opts.report = argv[++i];
+           opts.report = argv[++i];
+           if (opts.report === undefined) {
+               console.error('Error: --report requires a value.');
+               process.exit(1);
+           }
         } else if (a === '--help' || a === '-h') {
             opts.help = true;
         } else {
@@ -485,7 +502,6 @@ async function main() {
 
     ensureDir(RESULTS_DIR);
     ensureDir('profiles');
-    const ts = timestamp();
 
     let selected;
     if (opts.all) {
@@ -517,10 +533,25 @@ async function main() {
         process.exitCode = 1;
         return;
     }
+   // De-duplicate while preserving order so an accidental repeat does not
+   // run (and overwrite logs for) the same variant twice.
+   const seen = new Set();
+   const deduped = selected.filter((n) => {
+       if (seen.has(n)) return false;
+       seen.add(n);
+       return true;
+   });
+   if (deduped.length !== selected.length) {
+       console.warn(
+           `(note: ignored ${selected.length - deduped.length} duplicate ` +
+           `variant selection(s))`
+       );
+   }
+   selected = deduped;
 
     let failures = 0;
     for (const name of selected) {
-        const code = await runVariant(name, VARIANTS[name], ts);
+       const code = await runVariant(name, VARIANTS[name]);
         if (code !== 0) failures++;
     }
 

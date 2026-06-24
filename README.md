@@ -55,6 +55,17 @@ geometrically** rather than **tuned numerically**. There is no global
 learning rate to sweep, no `β₁/β₂` schedule, no warmup — QQN introduces no
 hyperparameters of its own beyond those of the components it composes.
 
+The deeper point is **architectural**, not mathematical. Classical
+optimization is a literature of monolithic methods — each lovingly proven,
+none of them *factored*. QQN treats four tangled concerns (direction, oracle,
+search, region) as **independently swappable strategies** behind small,
+pure-functional interfaces. The parabola itself *falls out* of that
+decomposition: once you stop thinking "L-BFGS is an algorithm" and start
+thinking "the direction is a component and the search is a component," the
+question "what curve connects them?" becomes unavoidable, and the straight
+line stops looking like a law of nature and starts looking like a hard-coded
+default nobody refactored. The math was downstream of the architecture.
+
 A bonus of this design: many classical optimizers (L-BFGS, Newton,
 momentum, Barzilai-Borwein, trust-region, OWL-QN, projected gradient) are
 **special cases** of QQN under particular configurations of its four axes.
@@ -360,20 +371,21 @@ Notable findings from the deeper sweeps:
 
 ## Documentation
 
-| Document                                           | Description                                                         |
-|----------------------------------------------------|---------------------------------------------------------------------|
-| [`algorithm.md`](docs/theory/algorithm.md)         | The QQN algorithm: quadratic path, line search, guarantees.         |
-| [`oracles.md`](docs/theory/oracles.md)             | The oracle abstraction (L-BFGS, Momentum, Shampoo, combinators).    |
-| [`regions.md`](docs/theory/regions.md)             | Projective regions (box, trust-region, orthant, combinators).       |
-| [`spline_search.md`](docs/theory/spline_search.md) | Cubic-Hermite spline line search that reuses gradient measurements. |
-| [`equivalences.md`](docs/theory/equivalences.md)   | Classical optimizers as QQN special cases.                          |
-| [`positioning.md`](docs/positioning.md)            | Where QQN fits relative to Adam / L-BFGS.                           |
-| [`ideal_problem.md`](docs/ideal_problem.md)        | What QQN actually requires vs. what merely helps.                   |
-| [`genesis.md`](docs/genesis.md)                    | The origin and evolution of the QQN algorithm.                      |
-| [`results.md`](docs/results.md)                    | Empirical MNIST benchmark: QQN vs. baselines and component sweeps.  |
-| [`conclusions.md`](docs/conclusions.md)            | Synthesis of the experimental findings and design-claim validation. |
-| [`python.md`](docs/project/python.md)              | venv, testing, linting, and publishing workflow.                    |
-| [`libraries.md`](docs/project/libraries.md)        | Installing JAX/jaxlib and the MNIST dataset.                        |
+| Document                                           | Description                                                          |
+|----------------------------------------------------|----------------------------------------------------------------------|
+| [`algorithm.md`](docs/theory/algorithm.md)         | The QQN algorithm: quadratic path, line search, guarantees.          |
+| [`oracles.md`](docs/theory/oracles.md)             | The oracle abstraction (L-BFGS, Momentum, Shampoo, combinators).     |
+| [`regions.md`](docs/theory/regions.md)             | Projective regions (box, trust-region, orthant, combinators).        |
+| [`spline_search.md`](docs/theory/spline_search.md) | Cubic-Hermite spline line search that reuses gradient measurements.  |
+| [`equivalences.md`](docs/theory/equivalences.md)   | Classical optimizers as QQN special cases.                           |
+| [`positioning.md`](docs/positioning.md)            | Where QQN fits relative to Adam / L-BFGS.                            |
+| [`ideal_problem.md`](docs/ideal_problem.md)        | What QQN actually requires vs. what merely helps.                    |
+| [`genesis.md`](docs/genesis.md)                    | The origin and evolution of the QQN algorithm.                       |
+| [`results.md`](docs/results.md)                    | Empirical MNIST benchmark: QQN vs. baselines and component sweeps.   |
+| [`conclusions.md`](docs/conclusions.md)            | Synthesis of the experimental findings and design-claim validation.  |
+| [`novelty.md`](docs/novelty.md)                    | Why the contribution is real: an engineer's insight into a math gap. |
+| [`python.md`](docs/project/python.md)              | venv, testing, linting, and publishing workflow.                     |
+| [`libraries.md`](docs/project/libraries.md)        | Installing JAX/jaxlib and the MNIST dataset.                         |
 
 ---
 
@@ -396,3 +408,22 @@ publishing workflow.
 ## License
 
 [Apache 2.0](LICENSE)
+
+---
+
+## A Closing Note
+
+QQN is novel the way a sandwich is novel when the bread and the filling have
+both existed for a thousand years and someone finally puts the filling
+*between the bread*. There is no new mathematics here, and that is exactly the
+point: an arrangement this natural being absent from the literature for thirty
+years is more interesting than its presence. The parabola was never a math
+problem waiting on a math person. It was a **design** problem waiting on
+someone with the reflex to ask which of an algorithm's welded-together parts
+were secretly parameters.
+
+**On provenance, stated once and plainly:** the idea is mine and predates the
+current AI era — it was first implemented around 2016 in MindsEye, my own Java
+deep-learning framework (see [`genesis.md`](docs/genesis.md)). AI tools were
+used to *port*, *document*, and *benchmark* it. The code runs. The math checks out.
+Judge the idea, not the author's credentials or the em-dashes.
