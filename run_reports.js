@@ -329,8 +329,22 @@ const DEFAULT_VARIANTS = [
 
 function runVariant(name, variant, ts) {
     return new Promise((resolve) => {
-        const logfile = path.join(RESULTS_DIR, `${variant.report}_${name}_${ts}.log`);
+        // Use a per-variant timestamp so sequential runs are distinguishable
+        // and never silently collide.
+        const variantTs = timestamp();
+        const logfile = path.join(
+            RESULTS_DIR,
+            `${variant.report}_${name}_${variantTs}.log`
+        );
         const scriptPath = path.join(REPORTS_DIR, `${variant.report}.py`);
+        if (!fs.existsSync(scriptPath)) {
+            console.error(
+                `!!! Script not found for variant "${name}": ${scriptPath}`
+            );
+            resolve(1);
+            return;
+        }
+
 
         console.log(`\n=== Running variant "${name}" (${variant.report}) ===`);
         console.log(`    ${variant.desc}`);
@@ -342,7 +356,9 @@ function runVariant(name, variant, ts) {
         }
         console.log(`    log: ${logfile}`);
 
-        const logStream = fs.createWriteStream(logfile, {flags: 'a'});
+        // Truncate ('w') rather than append: a fresh timestamped file per run
+        // should never accumulate stale content.
+        const logStream = fs.createWriteStream(logfile, {flags: 'w'});
         // If the variant requests scalene execution, use scalene as the
         // launcher so it actually captures a profile rather than just
         // printing a hint.
@@ -360,6 +376,21 @@ function runVariant(name, variant, ts) {
         const child = spawn(executable, spawnArgs, {
             env: {...process.env, ...variant.env},
         });
+        // Write a reproducible header so each log is self-describing.
+        const startedAt = Date.now();
+        const envPairs = Object.entries(variant.env)
+            .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+            .join(' ');
+        logStream.write(
+            `# variant: ${name}\n` +
+            `# report:  ${variant.report}\n` +
+            `# desc:    ${variant.desc}\n` +
+            `# started: ${new Date(startedAt).toISOString()}\n` +
+            `# command: ${envPairs ? envPairs + ' ' : ''}` +
+            `${executable} ${spawnArgs.join(' ')}\n` +
+            `${'-'.repeat(72)}\n`
+        );
+
 
         // Tee stdout/stderr to both the console and the log file.
         child.stdout.on('data', (data) => {
@@ -372,11 +403,18 @@ function runVariant(name, variant, ts) {
         });
 
         child.on('close', (code) => {
+            const elapsedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+            logStream.write(
+                `\n${'-'.repeat(72)}\n` +
+                `# exit code: ${code}  elapsed: ${elapsedS}s\n`
+            );
             logStream.end();
             if (code !== 0) {
-                console.error(`!!! variant "${name}" exited with code ${code}`);
+                console.error(
+                    `!!! variant "${name}" exited with code ${code} (${elapsedS}s)`
+                );
             } else {
-                console.log(`=== Finished variant "${name}" ===`);
+                console.log(`=== Finished variant "${name}" (${elapsedS}s) ===`);
             }
             resolve(code);
         });
@@ -457,7 +495,11 @@ async function main() {
             (n) => VARIANTS[n].report === opts.report
         );
         if (selected.length === 0) {
+            const reports = [
+                ...new Set(Object.values(VARIANTS).map((v) => v.report)),
+            ].sort();
             console.error(`No variants found for report "${opts.report}".`);
+            console.error(`Known reports: ${reports.join(', ')}`);
             process.exitCode = 1;
             return;
         }

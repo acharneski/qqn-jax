@@ -484,6 +484,8 @@ def run_config(
     activation_names: Union[str, List[str]] = "tanh",
     l2: float = 1e-4,
     history_size: int = 10,
+    quant_lo: float = -1.0,
+    quant_hi: float = 1.0,
 ) -> Dict[str, Any]:
     """Train one configuration and collect metrics.
 
@@ -562,7 +564,9 @@ def run_config(
     # Post-rounding loss: evaluate the (regularizer-free) test loss after
     # quantizing weights onto the grid. Reported in loss units so it is
     # directly comparable to ``loss`` and ``test_loss``.
-    quant_params = round_params_to_grid(final_params, bits=quant_bits, lo=-1.0, hi=1.0)
+    quant_params = round_params_to_grid(
+        final_params, bits=quant_bits, lo=quant_lo, hi=quant_hi
+    )
     quant_loss_val = float(test_loss(quant_params, x_test, y_test, activation))
 
     return {
@@ -702,14 +706,16 @@ def main():
             activation_names=activation_names,
             l2=l2,
             history_size=history_size,
+            quant_lo=QLO,
+            quant_hi=QHI,
         )
         results.append(res)
         base_results.append(res)
         print(
             f"  iters={res['iters']:3d}  loss={res['loss']:.4f}  "
-            f"test_acc={res['test_acc']:.4f}  "
+            f"test_loss={res['test_loss']:.4f}  "
             f"sparsity={res['sparsity']:.3f}  "
-            f"quant_err={res['quant_err']:.4f}  time={res['time_s']:.2f}s"
+            f"quant_loss={res['quant_loss']:.4f}  time={res['time_s']:.2f}s"
         )
 
     # Cross-product: every quant polishing variant on every base model.
@@ -736,14 +742,21 @@ def main():
                 activation_names=activation_names,
                 l2=l2,
                 history_size=history_size,
+                quant_lo=QLO,
+                quant_hi=QHI,
             )
             results.append(res)
             print(
                 f"  iters={res['iters']:3d}  loss={res['loss']:.4f}  "
-                f"test_acc={res['test_acc']:.4f}  "
+                f"test_loss={res['test_loss']:.4f}  "
                 f"sparsity={res['sparsity']:.3f}  "
-                f"quant_err={res['quant_err']:.4f}  time={res['time_s']:.2f}s"
+                f"quant_loss={res['quant_loss']:.4f}  time={res['time_s']:.2f}s"
             )
+    # Warm-start vectors are only needed during polishing; release them so
+    # large parameter arrays are not held for the rest of the run.
+    for base in base_results:
+        base.pop("final_flat", None)
+        base.pop("unravel", None)
 
     # Summary table.
     print("\n" + "=" * 90)
@@ -765,13 +778,22 @@ def main():
     # compression (higher sparsity + higher accuracy is better).
     print("\nPareto frontier (test_loss vs. sparsity — non-dominated configs):")
     pareto = []
-    for r in results:
-        dominated = any(
-            (o["test_loss"] <= r["test_loss"] and o["sparsity"] > r["sparsity"])
-            or (o["test_loss"] < r["test_loss"] and o["sparsity"] >= r["sparsity"])
-            for o in results
-            if o["name"] != r["name"]
-        )
+    for i, r in enumerate(results):
+        dominated = False
+        for j, o in enumerate(results):
+            if i == j:
+                continue
+            # ``o`` dominates ``r`` iff it is no worse on both objectives
+            # (lower test_loss, higher sparsity) and strictly better on one.
+            no_worse = (
+                o["test_loss"] <= r["test_loss"] and o["sparsity"] >= r["sparsity"]
+            )
+            strictly_better = (
+                o["test_loss"] < r["test_loss"] or o["sparsity"] > r["sparsity"]
+            )
+            if no_worse and strictly_better:
+                dominated = True
+                break
         if not dominated:
             pareto.append(r)
     for r in sorted(pareto, key=lambda d: d["sparsity"], reverse=True):
